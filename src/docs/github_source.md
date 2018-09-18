@@ -1,10 +1,14 @@
 # Download packages
 mkdir -p $GOPATH/src/golang.org/x/tools
+
 cd $GOPATH/src/golang.org/x/tools
+
 git clone https://github.com/golang/tools
 
 mkdir -p $GOPATH/src/golang.org/x/lint
+
 cd $GOPATH/src/golang.org/x/lint
+
 git clone https://github.com/golang/lint
 
 # Useful packages in golang 
