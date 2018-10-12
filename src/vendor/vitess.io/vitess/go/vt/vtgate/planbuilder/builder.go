@@ -111,13 +111,8 @@ type ContextVSchema interface {
 	FindTable(tablename sqlparser.TableName) (*vindexes.Table, string, topodatapb.TabletType, key.Destination, error)
 	FindTableOrVindex(tablename sqlparser.TableName) (*vindexes.Table, vindexes.Vindex, string, topodatapb.TabletType, key.Destination, error)
 	DefaultKeyspace() (*vindexes.Keyspace, error)
+	TargetString() string
 }
-
-const (
-	// DirectiveMultiShardAutocommit is the query comment directive to allow
-	// single round trip autocommit with a multi-shard statement.
-	DirectiveMultiShardAutocommit = "MULTI_SHARD_AUTOCOMMIT"
-)
 
 // Build builds a plan for a query based on the specified vschema.
 // It's the main entry point for this package.

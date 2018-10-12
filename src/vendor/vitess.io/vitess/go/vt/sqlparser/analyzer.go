@@ -59,7 +59,7 @@ func Preview(sql string) int {
 	if end := strings.IndexFunc(trimmed, unicode.IsSpace); end != -1 {
 		firstWord = trimmed[:end]
 	}
-
+	firstWord = strings.TrimLeftFunc(firstWord, func(r rune) bool { return !unicode.IsLetter(r) })
 	// Comparison is done in order of priority.
 	loweredFirstWord := strings.ToLower(firstWord)
 	switch loweredFirstWord {
@@ -254,22 +254,17 @@ func NewPlanValue(node Expr) (sqltypes.PlanValue, error) {
 	return sqltypes.PlanValue{}, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "expression is too complex '%v'", String(node))
 }
 
-// StringIn is a convenience function that returns
-// true if str matches any of the values.
-func StringIn(str string, values ...string) bool {
-	for _, val := range values {
-		if str == val {
-			return true
-		}
-	}
-	return false
+// SetKey is the extracted key from one SetExpr
+type SetKey struct {
+	Key   string
+	Scope string
 }
 
 // ExtractSetValues returns a map of key-value pairs
-// if the query is a SET statement. Values can be int64 or string.
+// if the query is a SET statement. Values can be bool, int64 or string.
 // Since set variable names are case insensitive, all keys are returned
 // as lower case.
-func ExtractSetValues(sql string) (keyValues map[string]interface{}, scope string, err error) {
+func ExtractSetValues(sql string) (keyValues map[SetKey]interface{}, scope string, err error) {
 	stmt, err := Parse(sql)
 	if err != nil {
 		return nil, "", err
@@ -278,28 +273,60 @@ func ExtractSetValues(sql string) (keyValues map[string]interface{}, scope strin
 	if !ok {
 		return nil, "", fmt.Errorf("ast did not yield *sqlparser.Set: %T", stmt)
 	}
-	result := make(map[string]interface{})
+	result := make(map[SetKey]interface{})
 	for _, expr := range setStmt.Exprs {
+		scope := ImplicitStr
 		key := expr.Name.Lowered()
+		switch {
+		case strings.HasPrefix(key, "@@global."):
+			scope = GlobalStr
+			key = strings.TrimPrefix(key, "@@global.")
+		case strings.HasPrefix(key, "@@session."):
+			scope = SessionStr
+			key = strings.TrimPrefix(key, "@@session.")
+		case strings.HasPrefix(key, "@@"):
+			key = strings.TrimPrefix(key, "@@")
+		}
+
+		if strings.HasPrefix(expr.Name.Lowered(), "@@") {
+			if setStmt.Scope != "" && scope != "" {
+				return nil, "", fmt.Errorf("unsupported in set: mixed using of variable scope")
+			}
+			_, out := NewStringTokenizer(key).Scan()
+			key = string(out)
+		}
+
+		setKey := SetKey{
+			Key:   key,
+			Scope: scope,
+		}
 
 		switch expr := expr.Expr.(type) {
 		case *SQLVal:
 			switch expr.Type {
 			case StrVal:
-				result[key] = string(expr.Val)
+				result[setKey] = strings.ToLower(string(expr.Val))
 			case IntVal:
 				num, err := strconv.ParseInt(string(expr.Val), 0, 64)
 				if err != nil {
 					return nil, "", err
 				}
-				result[key] = num
+				result[setKey] = num
 			default:
 				return nil, "", fmt.Errorf("invalid value type: %v", String(expr))
 			}
+		case BoolVal:
+			var val int64
+			if expr {
+				val = 1
+			}
+			result[setKey] = val
+		case *ColName:
+			result[setKey] = expr.Name.String()
 		case *NullVal:
-			result[key] = nil
+			result[setKey] = nil
 		case *Default:
-			result[key] = "default"
+			result[setKey] = "default"
 		default:
 			return nil, "", fmt.Errorf("invalid syntax: %s", String(expr))
 		}

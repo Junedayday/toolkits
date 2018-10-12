@@ -29,23 +29,19 @@ import (
 
 // MysqlDaemon is the interface we use for abstracting Mysqld.
 type MysqlDaemon interface {
-	// Cnf returns the underlying mycnf
-	Cnf() *Mycnf
-	// TabletDir returns the tablet directory.
-	TabletDir() string
-
 	// methods related to mysql running or not
-	Start(ctx context.Context, mysqldArgs ...string) error
-	Shutdown(ctx context.Context, waitForMysqld bool) error
+	Start(ctx context.Context, cnf *Mycnf, mysqldArgs ...string) error
+	Shutdown(ctx context.Context, cnf *Mycnf, waitForMysqld bool) error
 	RunMysqlUpgrade() error
-	ReinitConfig(ctx context.Context) error
-	RefreshConfig(ctx context.Context) error
-	Wait(ctx context.Context) error
+	ReinitConfig(ctx context.Context, cnf *Mycnf) error
+	Wait(ctx context.Context, cnf *Mycnf) error
 
 	// GetMysqlPort returns the current port mysql is listening on.
 	GetMysqlPort() (int32, error)
 
 	// replication related methods
+	StartSlave(hookExtraEnv map[string]string) error
+	StopSlave(hookExtraEnv map[string]string) error
 	SlaveStatus() (mysql.SlaveStatus, error)
 	SetSemiSyncEnabled(master, slave bool) error
 	SemiSyncEnabled() (master, slave bool)

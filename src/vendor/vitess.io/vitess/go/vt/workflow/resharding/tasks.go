@@ -25,19 +25,20 @@ import (
 
 	"vitess.io/vitess/go/vt/automation"
 	"vitess.io/vitess/go/vt/topo/topoproto"
+	"vitess.io/vitess/go/vt/workflow"
 	"vitess.io/vitess/go/vt/wrangler"
 
 	topodatapb "vitess.io/vitess/go/vt/proto/topodata"
 	workflowpb "vitess.io/vitess/go/vt/proto/workflow"
 )
 
-func createTaskID(phase PhaseType, shardName string) string {
+func createTaskID(phase workflow.PhaseType, shardName string) string {
 	return fmt.Sprintf("%s/%s", phase, shardName)
 }
 
 // GetTasks returns selected tasks for a phase from the checkpoint
 // with expected execution order.
-func (hw *HorizontalReshardingWorkflow) GetTasks(phase PhaseType) []*workflowpb.Task {
+func (hw *horizontalReshardingWorkflow) GetTasks(phase workflow.PhaseType) []*workflowpb.Task {
 	var shards []string
 	switch phase {
 	case phaseCopySchema, phaseWaitForFilteredReplication, phaseDiff:
@@ -56,7 +57,7 @@ func (hw *HorizontalReshardingWorkflow) GetTasks(phase PhaseType) []*workflowpb.
 	return tasks
 }
 
-func (hw *HorizontalReshardingWorkflow) runCopySchema(ctx context.Context, t *workflowpb.Task) error {
+func (hw *horizontalReshardingWorkflow) runCopySchema(ctx context.Context, t *workflowpb.Task) error {
 	keyspace := t.Attributes["keyspace"]
 	sourceShard := t.Attributes["source_shard"]
 	destShard := t.Attributes["destination_shard"]
@@ -64,10 +65,12 @@ func (hw *HorizontalReshardingWorkflow) runCopySchema(ctx context.Context, t *wo
 		keyspace, sourceShard, keyspace, destShard, wrangler.DefaultWaitSlaveTimeout)
 }
 
-func (hw *HorizontalReshardingWorkflow) runSplitClone(ctx context.Context, t *workflowpb.Task) error {
+func (hw *horizontalReshardingWorkflow) runSplitClone(ctx context.Context, t *workflowpb.Task) error {
 	keyspace := t.Attributes["keyspace"]
 	sourceShard := t.Attributes["source_shard"]
 	worker := t.Attributes["vtworker"]
+	minHealthyRdonlyTablets := t.Attributes["min_healthy_rdonly_tablets"]
+	splitCmd := t.Attributes["split_cmd"]
 
 	sourceKeyspaceShard := topoproto.KeyspaceShardString(keyspace, sourceShard)
 	// Reset the vtworker to avoid error if vtworker command has been called elsewhere.
@@ -75,34 +78,33 @@ func (hw *HorizontalReshardingWorkflow) runSplitClone(ctx context.Context, t *wo
 	if _, err := automation.ExecuteVtworker(ctx, worker, []string{"Reset"}); err != nil {
 		return err
 	}
-	// The flag min_healthy_rdonly_tablets is set to 1 (default value is 2).
-	// Therefore, we can reuse the normal end to end test setting, which has only 1 rdonly tablet.
-	// TODO(yipeiw): Add min_healthy_rdonly_tablets as an input argument in UI.
-	args := []string{"SplitClone", "--min_healthy_rdonly_tablets=1", sourceKeyspaceShard}
+
+	args := []string{splitCmd, "--min_healthy_rdonly_tablets=" + minHealthyRdonlyTablets, sourceKeyspaceShard}
 	_, err := automation.ExecuteVtworker(hw.ctx, worker, args)
 	return err
 }
 
-func (hw *HorizontalReshardingWorkflow) runWaitForFilteredReplication(ctx context.Context, t *workflowpb.Task) error {
+func (hw *horizontalReshardingWorkflow) runWaitForFilteredReplication(ctx context.Context, t *workflowpb.Task) error {
 	keyspace := t.Attributes["keyspace"]
 	destShard := t.Attributes["destination_shard"]
 	return hw.wr.WaitForFilteredReplication(ctx, keyspace, destShard, wrangler.DefaultWaitForFilteredReplicationMaxDelay)
 }
 
-func (hw *HorizontalReshardingWorkflow) runSplitDiff(ctx context.Context, t *workflowpb.Task) error {
+func (hw *horizontalReshardingWorkflow) runSplitDiff(ctx context.Context, t *workflowpb.Task) error {
 	keyspace := t.Attributes["keyspace"]
 	destShard := t.Attributes["destination_shard"]
+	destinationTabletType := t.Attributes["dest_tablet_type"]
 	worker := t.Attributes["vtworker"]
 
 	if _, err := automation.ExecuteVtworker(hw.ctx, worker, []string{"Reset"}); err != nil {
 		return err
 	}
-	args := []string{"SplitDiff", "--min_healthy_rdonly_tablets=1", topoproto.KeyspaceShardString(keyspace, destShard)}
+	args := []string{"SplitDiff", "--min_healthy_rdonly_tablets=1", "--dest_tablet_type=" + destinationTabletType, topoproto.KeyspaceShardString(keyspace, destShard)}
 	_, err := automation.ExecuteVtworker(ctx, worker, args)
 	return err
 }
 
-func (hw *HorizontalReshardingWorkflow) runMigrate(ctx context.Context, t *workflowpb.Task) error {
+func (hw *horizontalReshardingWorkflow) runMigrate(ctx context.Context, t *workflowpb.Task) error {
 	keyspace := t.Attributes["keyspace"]
 	sourceShard := t.Attributes["source_shard"]
 	servedTypeStr := t.Attributes["served_type"]

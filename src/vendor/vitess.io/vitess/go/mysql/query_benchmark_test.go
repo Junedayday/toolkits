@@ -17,24 +17,36 @@ limitations under the License.
 package mysql
 
 import (
+	"flag"
+	"math/rand"
 	"net"
-	"sync"
+	"strings"
 	"testing"
 
 	"golang.org/x/net/context"
 )
 
-// This file contains various long-running tests for mysql.
+var testReadConnBufferSize = connBufferSize
 
-// BenchmarkParallelShortQueries creates N simultaneous connections, then
-// executes M queries on them, then closes them.
-// It is meant as a somewhat real load test.
-func BenchmarkParallelShortQueries(b *testing.B) {
+func init() {
+	flag.IntVar(&testReadConnBufferSize, "test.read_conn_buffer_size", connBufferSize, "buffer size for reads from connections in tests")
+}
+
+const benchmarkQueryPrefix = "benchmark "
+
+func benchmarkQuery(b *testing.B, threads int, query string) {
 	th := &testHandler{}
 
 	authServer := &AuthServerNone{}
 
-	l, err := NewListener("tcp", ":0", authServer, th, 0, 0)
+	lCfg := ListenerConfig{
+		Protocol:           "tcp",
+		Address:            ":0",
+		AuthServer:         authServer,
+		Handler:            th,
+		ConnReadBufferSize: testReadConnBufferSize,
+	}
+	l, err := NewListenerWithConfig(lCfg)
 	if err != nil {
 		b.Fatalf("NewListener failed: %v", err)
 	}
@@ -44,6 +56,11 @@ func BenchmarkParallelShortQueries(b *testing.B) {
 		l.Accept()
 	}()
 
+	b.SetParallelism(threads)
+	if query != "" {
+		b.SetBytes(int64(len(query)))
+	}
+
 	host := l.Addr().(*net.TCPAddr).IP.String()
 	port := l.Addr().(*net.TCPAddr).Port
 	params := &ConnParams{
@@ -52,46 +69,51 @@ func BenchmarkParallelShortQueries(b *testing.B) {
 		Uname: "user1",
 		Pass:  "password1",
 	}
-
 	ctx := context.Background()
-	threadCount := 10
-
-	wg := sync.WaitGroup{}
-	conns := make([]*Conn, threadCount)
-	for i := 0; i < threadCount; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-
-			var err error
-			conns[i], err = Connect(ctx, params)
-			if err != nil {
-				b.Errorf("cannot connect: %v", err)
-				return
-			}
-		}(i)
-	}
-	wg.Wait()
 
 	b.ResetTimer()
-	for i := 0; i < threadCount; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer func() {
-				wg.Done()
-				conns[i].writeComQuit()
-				conns[i].Close()
-			}()
-			for j := 0; j < b.N; j++ {
-				_, err = conns[i].ExecuteFetch("select rows", 1000, true)
-				if err != nil {
-					b.Errorf("ExecuteFetch failed: %v", err)
-					return
-				}
+
+	// MaxPacketSize is too big for benchmarks, so choose something smaller
+	maxPacketSize := connBufferSize * 4
+
+	b.RunParallel(func(pb *testing.PB) {
+		conn, err := Connect(ctx, params)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer func() {
+			conn.writeComQuit()
+			conn.Close()
+		}()
+
+		for pb.Next() {
+			execQuery := query
+			if execQuery == "" {
+				// generate random query
+				n := rand.Intn(maxPacketSize-len(benchmarkQueryPrefix)) + 1
+				execQuery = benchmarkQueryPrefix + strings.Repeat("x", n)
+
 			}
-		}(i)
-	}
+			if _, err := conn.ExecuteFetch(execQuery, 1000, true); err != nil {
+				b.Fatalf("ExecuteFetch failed: %v", err)
+			}
+		}
+	})
+}
 
-	wg.Wait()
+// This file contains various long-running tests for mysql.
 
+// BenchmarkParallelShortQueries creates N simultaneous connections, then
+// executes M queries on them, then closes them.
+// It is meant as a somewhat real load test.
+func BenchmarkParallelShortQueries(b *testing.B) {
+	benchmarkQuery(b, 10, benchmarkQueryPrefix+"select rows")
+}
+
+func BenchmarkParallelMediumQueries(b *testing.B) {
+	benchmarkQuery(b, 10, benchmarkQueryPrefix+"select"+strings.Repeat("x", connBufferSize))
+}
+
+func BenchmarkParallelRandomQueries(b *testing.B) {
+	benchmarkQuery(b, 10, "")
 }

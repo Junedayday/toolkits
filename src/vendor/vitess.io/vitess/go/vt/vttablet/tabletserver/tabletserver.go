@@ -21,9 +21,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/context"
@@ -43,6 +46,7 @@ import (
 	"vitess.io/vitess/go/vt/log"
 	"vitess.io/vitess/go/vt/logutil"
 	"vitess.io/vitess/go/vt/sqlparser"
+	"vitess.io/vitess/go/vt/tableacl"
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/vterrors"
 	"vitess.io/vitess/go/vt/vttablet/heartbeat"
@@ -155,7 +159,7 @@ type TabletServer struct {
 
 	// The following variables should be initialized only once
 	// before starting the tabletserver.
-	dbconfigs dbconfigs.DBConfigs
+	dbconfigs *dbconfigs.DBConfigs
 
 	// The following variables should only be accessed within
 	// the context of a startRequest-endRequest.
@@ -245,10 +249,16 @@ func NewTabletServer(config tabletenv.TabletConfig, topoServer *topo.Server, ali
 			tsv.mu.Unlock()
 			return state
 		})
+		stats.Publish("TabletStateName", stats.StringFunc(tsv.GetState))
+
+		// TabletServerState exports the same information as the above two stats (TabletState / TabletStateName),
+		// but exported with TabletStateName as a label for Prometheus, which doesn't support exporting strings as stat values.
+		stats.NewGaugesFuncWithMultiLabels("TabletServerState", "Tablet server state labeled by state name", []string{"name"}, func() map[string]int64 {
+			return map[string]int64{tsv.GetState(): 1}
+		})
 		stats.NewGaugeDurationFunc("QueryTimeout", "Tablet server query timeout", tsv.QueryTimeout.Get)
 		stats.NewGaugeDurationFunc("QueryPoolTimeout", "Tablet server timeout to get a connection from the query pool", tsv.qe.connTimeout.Get)
 		stats.NewGaugeDurationFunc("BeginTimeout", "Tablet server begin timeout", tsv.BeginTimeout.Get)
-		stats.Publish("TabletStateName", stats.StringFunc(tsv.GetState))
 	})
 	return tsv
 }
@@ -320,9 +330,9 @@ func (tsv *TabletServer) IsServing() bool {
 	return tsv.GetState() == "SERVING"
 }
 
-// InitDBConfig inititalizes the db config variables for TabletServer. You must call this function before
+// InitDBConfig initializes the db config variables for TabletServer. You must call this function before
 // calling SetServingType.
-func (tsv *TabletServer) InitDBConfig(target querypb.Target, dbcfgs dbconfigs.DBConfigs) error {
+func (tsv *TabletServer) InitDBConfig(target querypb.Target, dbcfgs *dbconfigs.DBConfigs) error {
 	tsv.mu.Lock()
 	defer tsv.mu.Unlock()
 	if tsv.state != StateNotConnected {
@@ -330,13 +340,6 @@ func (tsv *TabletServer) InitDBConfig(target querypb.Target, dbcfgs dbconfigs.DB
 	}
 	tsv.target = target
 	tsv.dbconfigs = dbcfgs
-	// Massage Dba so that it inherits the
-	// App values but keeps the credentials.
-	tsv.dbconfigs.Dba = dbcfgs.App
-	if n, p := dbcfgs.Dba.Uname, dbcfgs.Dba.Pass; n != "" {
-		tsv.dbconfigs.Dba.Uname = n
-		tsv.dbconfigs.Dba.Pass = p
-	}
 
 	tsv.se.InitDBConfig(tsv.dbconfigs)
 	tsv.qe.InitDBConfig(tsv.dbconfigs)
@@ -348,9 +351,39 @@ func (tsv *TabletServer) InitDBConfig(target querypb.Target, dbcfgs dbconfigs.DB
 	return nil
 }
 
+func (tsv *TabletServer) initACL(tableACLConfigFile string, enforceTableACLConfig bool) {
+	// tabletacl.Init loads ACL from file if *tableACLConfig is not empty
+	err := tableacl.Init(
+		tableACLConfigFile,
+		func() {
+			tsv.ClearQueryPlanCache()
+		},
+	)
+	if err != nil {
+		log.Errorf("Fail to initialize Table ACL: %v", err)
+		if enforceTableACLConfig {
+			log.Exit("Need a valid initial Table ACL when enforce-tableacl-config is set, exiting.")
+		}
+	}
+}
+
+// InitACL loads the table ACL and sets up a SIGHUP handler for reloading it.
+func (tsv *TabletServer) InitACL(tableACLConfigFile string, enforceTableACLConfig bool) {
+	tsv.initACL(tableACLConfigFile, enforceTableACLConfig)
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGHUP)
+	go func() {
+		for {
+			<-sigChan
+			tsv.initACL(tableACLConfigFile, enforceTableACLConfig)
+		}
+	}()
+}
+
 // StartService is a convenience function for InitDBConfig->SetServingType
 // with serving=true.
-func (tsv *TabletServer) StartService(target querypb.Target, dbcfgs dbconfigs.DBConfigs) (err error) {
+func (tsv *TabletServer) StartService(target querypb.Target, dbcfgs *dbconfigs.DBConfigs) (err error) {
 	// Save tablet type away to prevent data races
 	tabletType := target.TabletType
 	err = tsv.InitDBConfig(target, dbcfgs)
@@ -459,7 +492,7 @@ func (tsv *TabletServer) decideAction(tabletType topodatapb.TabletType, serving 
 }
 
 func (tsv *TabletServer) fullStart() (err error) {
-	c, err := dbconnpool.NewDBConnection(&tsv.dbconfigs.App, tabletenv.MySQLStats)
+	c, err := dbconnpool.NewDBConnection(tsv.dbconfigs.AppWithDB(), tabletenv.MySQLStats)
 	if err != nil {
 		log.Errorf("error creating db app connection: %v", err)
 		return err
@@ -1790,9 +1823,7 @@ func (tsv *TabletServer) UpdateStream(ctx context.Context, target *querypb.Targe
 	}
 	defer tsv.endRequest(false)
 
-	cp := tsv.dbconfigs.Dba
-	cp.DbName = tsv.dbconfigs.App.DbName
-	s := binlog.NewEventStreamer(&cp, tsv.se, p, timestamp, callback)
+	s := binlog.NewEventStreamer(tsv.dbconfigs.DbaWithDB(), tsv.se, p, timestamp, callback)
 
 	// Create a cancelable wrapping context.
 	streamCtx, streamCancel := context.WithCancel(ctx)
@@ -2072,6 +2103,13 @@ func (tsv *TabletServer) SetTxPoolWaiterCap(val int64) {
 // This function should only be used for testing.
 func (tsv *TabletServer) GetTxPoolWaiterCap() int64 {
 	return tsv.te.txPool.waiterCap.Get()
+}
+
+// SetConsolidatorEnabled (true) will enable the query consolidator.
+// SetConsolidatorEnabled (false) will disable the query consolidator.
+// This function should only be used for testing.
+func (tsv *TabletServer) SetConsolidatorEnabled(enabled bool) {
+	tsv.qe.enableConsolidator = enabled
 }
 
 // queryAsString returns a readable version of query+bind variables.

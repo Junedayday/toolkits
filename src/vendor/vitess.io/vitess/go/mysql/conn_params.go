@@ -29,10 +29,15 @@ type ConnParams struct {
 
 	// The following SSL flags are only used when flags |= 2048
 	// is set (CapabilityClientSSL).
-	SslCa     string `json:"ssl_ca"`
-	SslCaPath string `json:"ssl_ca_path"`
-	SslCert   string `json:"ssl_cert"`
-	SslKey    string `json:"ssl_key"`
+	SslCa      string `json:"ssl_ca"`
+	SslCaPath  string `json:"ssl_ca_path"`
+	SslCert    string `json:"ssl_cert"`
+	SslKey     string `json:"ssl_key"`
+	ServerName string `json:"server_name"`
+
+	// The following is only set when the deprecated "dbname" flags are
+	// supplied and will be removed.
+	DeprecatedDBName string
 }
 
 // EnableSSL will set the right flag on the parameters.

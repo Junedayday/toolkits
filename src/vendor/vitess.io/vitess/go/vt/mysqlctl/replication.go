@@ -36,14 +36,6 @@ import (
 	"vitess.io/vitess/go/vt/log"
 )
 
-const (
-	// SQLStartSlave is the SQl command issued to start MySQL replication
-	SQLStartSlave = "START SLAVE"
-
-	// SQLStopSlave is the SQl command issued to stop MySQL replication
-	SQLStopSlave = "STOP SLAVE"
-)
-
 // WaitForSlaveStart waits until the deadline for replication to start.
 // This validates the current master is correct and can be connected to.
 func WaitForSlaveStart(mysqld MysqlDaemon, slaveStartDeadline int) error {
@@ -73,9 +65,16 @@ func WaitForSlaveStart(mysqld MysqlDaemon, slaveStartDeadline int) error {
 	return nil
 }
 
-// StartSlave starts a slave on the provided MysqldDaemon
-func StartSlave(md MysqlDaemon, hookExtraEnv map[string]string) error {
-	if err := md.ExecuteSuperQueryList(context.TODO(), []string{SQLStartSlave}); err != nil {
+// StartSlave starts a slave.
+func (mysqld *Mysqld) StartSlave(hookExtraEnv map[string]string) error {
+	ctx := context.TODO()
+	conn, err := getPoolReconnect(ctx, mysqld.dbaPool)
+	if err != nil {
+		return err
+	}
+	defer conn.Recycle()
+
+	if err := mysqld.executeSuperQueryListConn(ctx, conn, []string{conn.StartSlaveCommand()}); err != nil {
 		return err
 	}
 
@@ -84,15 +83,21 @@ func StartSlave(md MysqlDaemon, hookExtraEnv map[string]string) error {
 	return h.ExecuteOptional()
 }
 
-// StopSlave stops a slave on the provided MysqldDaemon
-func StopSlave(md MysqlDaemon, hookExtraEnv map[string]string) error {
+// StopSlave stops a slave.
+func (mysqld *Mysqld) StopSlave(hookExtraEnv map[string]string) error {
 	h := hook.NewSimpleHook("preflight_stop_slave")
 	h.ExtraEnv = hookExtraEnv
 	if err := h.ExecuteOptional(); err != nil {
 		return err
 	}
+	ctx := context.TODO()
+	conn, err := getPoolReconnect(ctx, mysqld.dbaPool)
+	if err != nil {
+		return err
+	}
+	defer conn.Recycle()
 
-	return md.ExecuteSuperQueryList(context.TODO(), []string{SQLStopSlave})
+	return mysqld.executeSuperQueryListConn(ctx, conn, []string{conn.StopSlaveCommand()})
 }
 
 // GetMysqlPort returns mysql port
@@ -165,7 +170,7 @@ func (mysqld *Mysqld) WaitMasterPos(ctx context.Context, targetPos mysql.Positio
 	}
 	result := qr.Rows[0][0]
 	if result.IsNull() {
-		return fmt.Errorf("WaitUntilPositionCommand(%v) failed: gtid_mode is OFF", query)
+		return fmt.Errorf("WaitUntilPositionCommand(%v) failed: replication is probably stopped", query)
 	}
 	if result.ToString() == "-1" {
 		return fmt.Errorf("timed out waiting for position %v", targetPos)
@@ -211,7 +216,7 @@ func (mysqld *Mysqld) SetSlavePosition(ctx context.Context, pos mysql.Position) 
 // SetMaster makes the provided host / port the master. It optionally
 // stops replication before, and starts it after.
 func (mysqld *Mysqld) SetMaster(ctx context.Context, masterHost string, masterPort int, slaveStopBefore bool, slaveStartAfter bool) error {
-	params, err := dbconfigs.WithCredentials(&mysqld.dbcfgs.Repl)
+	params, err := dbconfigs.WithCredentials(mysqld.dbcfgs.Repl())
 	if err != nil {
 		return err
 	}
@@ -223,12 +228,12 @@ func (mysqld *Mysqld) SetMaster(ctx context.Context, masterHost string, masterPo
 
 	cmds := []string{}
 	if slaveStopBefore {
-		cmds = append(cmds, SQLStopSlave)
+		cmds = append(cmds, conn.StopSlaveCommand())
 	}
-	smc := conn.SetMasterCommand(&params, masterHost, masterPort, int(masterConnectRetry.Seconds()))
+	smc := conn.SetMasterCommand(params, masterHost, masterPort, int(masterConnectRetry.Seconds()))
 	cmds = append(cmds, smc)
 	if slaveStartAfter {
-		cmds = append(cmds, SQLStartSlave)
+		cmds = append(cmds, conn.StartSlaveCommand())
 	}
 	return mysqld.executeSuperQueryListConn(ctx, conn, cmds)
 }
@@ -293,43 +298,6 @@ func FindSlaves(mysqld MysqlDaemon) ([]string, error) {
 	}
 
 	return addrs, nil
-}
-
-// WaitBlpPosition will wait for the filtered replication to reach at least
-// the provided position.
-func WaitBlpPosition(ctx context.Context, mysqld MysqlDaemon, sql string, replicationPosition string) error {
-	position, err := mysql.DecodePosition(replicationPosition)
-	if err != nil {
-		return err
-	}
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		qr, err := mysqld.FetchSuperQuery(ctx, sql)
-		if err != nil {
-			return err
-		}
-		if len(qr.Rows) != 1 {
-			return fmt.Errorf("QueryBlpCheckpoint(%v) returned unexpected row count: %v", sql, len(qr.Rows))
-		}
-		var pos mysql.Position
-		if !qr.Rows[0][0].IsNull() {
-			pos, err = mysql.DecodePosition(qr.Rows[0][0].ToString())
-			if err != nil {
-				return err
-			}
-		}
-		if pos.AtLeast(position) {
-			return nil
-		}
-
-		log.Infof("Sleeping 1 second waiting for binlog replication(%v) to catch up: %v != %v", sql, pos, position)
-		time.Sleep(1 * time.Second)
-	}
 }
 
 // EnableBinlogPlayback prepares the server to play back events from a binlog stream.

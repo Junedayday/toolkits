@@ -19,7 +19,6 @@ package stats
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -88,11 +87,20 @@ func (c *counters) Add(name string, value int64) {
 	atomic.AddInt64(a, value)
 }
 
-// ResetAll resets all counter values.
+// ResetAll resets all counter values and clears all keys.
 func (c *counters) ResetAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.counts = make(map[string]*int64)
+}
+
+// ZeroAll resets all counter values to zero
+func (c *counters) ZeroAll() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, a := range c.counts {
+		atomic.StoreInt64(a, int64(0))
+	}
 }
 
 // Reset resets a specific counter value to 0.
@@ -203,7 +211,7 @@ func (mc *CountersWithMultiLabels) Add(names []string, value int64) {
 		logCounterNegative.Warningf("Adding a negative value to a counter, %v should be a gauge instead", mc)
 	}
 
-	mc.counters.Add(mapKey(names), value)
+	mc.counters.Add(safeJoinLabels(names), value)
 }
 
 // Reset resets the value of a named counter back to 0.
@@ -213,7 +221,7 @@ func (mc *CountersWithMultiLabels) Reset(names []string) {
 		panic("CountersWithMultiLabels: wrong number of values in Reset")
 	}
 
-	mc.counters.Reset(mapKey(names))
+	mc.counters.Reset(safeJoinLabels(names))
 }
 
 // Counts returns a copy of the Counters' map.
@@ -362,7 +370,7 @@ func (mg *GaugesWithMultiLabels) Set(names []string, value int64) {
 	if len(names) != len(mg.CountersWithMultiLabels.labels) {
 		panic("GaugesWithMultiLabels: wrong number of values in Set")
 	}
-	a := mg.getValueAddr(mapKey(names))
+	a := mg.getValueAddr(safeJoinLabels(names))
 	atomic.StoreInt64(a, value)
 }
 
@@ -373,7 +381,7 @@ func (mg *GaugesWithMultiLabels) Add(names []string, value int64) {
 		panic("CountersWithMultiLabels: wrong number of values in Add")
 	}
 
-	mg.counters.Add(mapKey(names), value)
+	mg.counters.Add(safeJoinLabels(names), value)
 }
 
 // GaugesFuncWithMultiLabels is a wrapper around CountersFuncWithMultiLabels
@@ -398,14 +406,4 @@ func NewGaugesFuncWithMultiLabels(name, help string, labels []string, f func() m
 	}
 
 	return t
-}
-
-var escaper = strings.NewReplacer(".", "\\.", "\\", "\\\\")
-
-func mapKey(ss []string) string {
-	esc := make([]string, len(ss))
-	for i, f := range ss {
-		esc[i] = escaper.Replace(f)
-	}
-	return strings.Join(esc, ".")
 }

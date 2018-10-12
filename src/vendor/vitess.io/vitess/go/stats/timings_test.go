@@ -18,6 +18,7 @@ package stats
 
 import (
 	"expvar"
+	"strings"
 	"testing"
 	"time"
 )
@@ -41,6 +42,18 @@ func TestMultiTimings(t *testing.T) {
 	mtm.Add([]string{"tag1a", "tag1b"}, 1*time.Millisecond)
 	mtm.Add([]string{"tag2a", "tag2b"}, 1*time.Millisecond)
 	want := `{"TotalCount":3,"TotalTime":2500000,"Histograms":{"tag1a.tag1b":{"500000":1,"1000000":2,"5000000":2,"10000000":2,"50000000":2,"100000000":2,"500000000":2,"1000000000":2,"5000000000":2,"10000000000":2,"inf":2,"Count":2,"Time":1500000},"tag2a.tag2b":{"500000":0,"1000000":1,"5000000":1,"10000000":1,"50000000":1,"100000000":1,"500000000":1,"1000000000":1,"5000000000":1,"10000000000":1,"inf":1,"Count":1,"Time":1000000}}}`
+	if got := mtm.String(); got != want {
+		t.Errorf("got %s, want %s", got, want)
+	}
+}
+
+func TestMultiTimingsDot(t *testing.T) {
+	clear()
+	mtm := NewMultiTimings("maptimings2", "help", []string{"label"})
+	mtm.Add([]string{"value.dot"}, 500*time.Microsecond)
+	safe := safeLabel("value.dot")
+	safeJSON := strings.Replace(safe, "\\", "\\\\", -1)
+	want := `{"TotalCount":1,"TotalTime":500000,"Histograms":{"` + safeJSON + `":{"500000":1,"1000000":1,"5000000":1,"10000000":1,"50000000":1,"100000000":1,"500000000":1,"1000000000":1,"5000000000":1,"10000000000":1,"inf":1,"Count":1,"Time":500000}}}`
 	if got := mtm.String(); got != want {
 		t.Errorf("got %s, want %s", got, want)
 	}

@@ -84,7 +84,7 @@ func (agent *ActionAgent) stopSlaveLocked(ctx context.Context) error {
 		}
 	}()
 
-	return mysqlctl.StopSlave(agent.MysqlDaemon, agent.hookExtraEnv())
+	return agent.MysqlDaemon.StopSlave(agent.hookExtraEnv())
 }
 
 // StopSlaveMinimum will stop the slave after it reaches at least the
@@ -139,7 +139,7 @@ func (agent *ActionAgent) StartSlave(ctx context.Context) error {
 	if err := agent.fixSemiSync(agent.Tablet().Type); err != nil {
 		return err
 	}
-	return mysqlctl.StartSlave(agent.MysqlDaemon, agent.hookExtraEnv())
+	return agent.MysqlDaemon.StartSlave(agent.hookExtraEnv())
 }
 
 // GetSlaves returns the address of all the slaves
@@ -404,26 +404,40 @@ func (agent *ActionAgent) SetMaster(ctx context.Context, parentAlias *topodatapb
 	return agent.setMasterLocked(ctx, parentAlias, timeCreatedNS, forceStartSlave)
 }
 
-func (agent *ActionAgent) setMasterLocked(ctx context.Context, parentAlias *topodatapb.TabletAlias, timeCreatedNS int64, forceStartSlave bool) error {
+func (agent *ActionAgent) setMasterRepairReplication(ctx context.Context, parentAlias *topodatapb.TabletAlias, timeCreatedNS int64, forceStartSlave bool) (err error) {
 	parent, err := agent.TopoServer.GetTablet(ctx, parentAlias)
 	if err != nil {
 		return err
 	}
 
-	// If this tablet used to be a master, end orchestrator maintenance after we are connected to the new master.
-	// This is a best effort operation, so it should happen in a goroutine
-	if agent.Tablet().Type == topodatapb.TabletType_MASTER {
-		defer func() {
-			go func() {
-				if agent.orc == nil {
-					return
-				}
-				if err := agent.orc.EndMaintenance(agent.Tablet()); err != nil {
-					log.Warningf("Orchestrator EndMaintenance failed: %v", err)
-				}
-			}()
-		}()
+	ctx, unlock, lockErr := agent.TopoServer.LockShard(ctx, parent.Tablet.GetKeyspace(), parent.Tablet.GetShard(), fmt.Sprintf("repairReplication to %v as parent)", topoproto.TabletAliasString(parentAlias)))
+	if lockErr != nil {
+		return lockErr
 	}
+
+	defer unlock(&err)
+
+	return agent.setMasterLocked(ctx, parentAlias, timeCreatedNS, forceStartSlave)
+}
+
+func (agent *ActionAgent) setMasterLocked(ctx context.Context, parentAlias *topodatapb.TabletAlias, timeCreatedNS int64, forceStartSlave bool) (err error) {
+	parent, err := agent.TopoServer.GetTablet(ctx, parentAlias)
+	if err != nil {
+		return err
+	}
+
+	// End orchestrator maintenance at the end of fixing replication.
+	// This is a best effort operation, so it should happen in a goroutine
+	defer func() {
+		go func() {
+			if agent.orc == nil {
+				return
+			}
+			if err := agent.orc.EndMaintenance(agent.Tablet()); err != nil {
+				log.Warningf("Orchestrator EndMaintenance failed: %v", err)
+			}
+		}()
+	}()
 
 	// See if we were replicating at all, and should be replicating
 	wasReplicating := false
@@ -461,7 +475,7 @@ func (agent *ActionAgent) setMasterLocked(ctx context.Context, parentAlias *topo
 			typeChanged = true
 			return nil
 		}
-		return topo.ErrNoUpdateNeeded
+		return topo.NewError(topo.NoUpdateNeeded, agent.TabletAlias.String())
 	})
 	if err != nil {
 		return err
@@ -500,7 +514,7 @@ func (agent *ActionAgent) SlaveWasRestarted(ctx context.Context, parent *topodat
 			typeChanged = true
 			return nil
 		}
-		return topo.ErrNoUpdateNeeded
+		return topo.NewError(topo.NoUpdateNeeded, agent.TabletAlias.String())
 	}); err != nil {
 		return err
 	}
@@ -644,10 +658,10 @@ func (agent *ActionAgent) fixSemiSyncAndReplication(tabletType topodatapb.Tablet
 
 	// We need to restart replication
 	log.Infof("Restarting replication for semi-sync flag change to take effect from %v to %v", acking, shouldAck)
-	if err := mysqlctl.StopSlave(agent.MysqlDaemon, agent.hookExtraEnv()); err != nil {
+	if err := agent.MysqlDaemon.StopSlave(agent.hookExtraEnv()); err != nil {
 		return fmt.Errorf("failed to StopSlave: %v", err)
 	}
-	if err := mysqlctl.StartSlave(agent.MysqlDaemon, agent.hookExtraEnv()); err != nil {
+	if err := agent.MysqlDaemon.StartSlave(agent.hookExtraEnv()); err != nil {
 		return fmt.Errorf("failed to StartSlave: %v", err)
 	}
 	return nil

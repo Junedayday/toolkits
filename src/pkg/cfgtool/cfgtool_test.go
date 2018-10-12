@@ -5,18 +5,29 @@ import (
 )
 
 func TestLoadYamlFile(t *testing.T) {
+	type MysqlCfg struct {
+		IP       string
+		Port     int
+		User     string
+		Password string
+	}
 	type yamlCfg struct {
-		ID        int
-		Name      string
-		Locations []string `yaml:",flow"`
+		Mysql MysqlCfg
 	}
 	testCfg := &yamlCfg{}
-	err := loadCfgFromYamlFile("../../configs/testing/testing.yaml", testCfg)
+	err := LoadCfgFromYamlFile("../../configs/testing/test.yaml", testCfg)
 	if err != nil {
 		t.Error("Load yaml file failed!")
 		return
 	}
-	if testCfg.ID != 1 || testCfg.Name != "Panjun" || len(testCfg.Locations) != 3 {
+	if testCfg.Mysql.IP == "" || testCfg.Mysql.Port == 0 || testCfg.Mysql.User == "" || testCfg.Mysql.Password == "" {
 		t.Error("read yaml file wrong!")
+		return
+	}
+
+	// defined a wrong path
+	err = LoadCfgFromYamlFile("../../configs/testing/testing1.yaml", testCfg)
+	if err == nil {
+		t.Error("file not exist")
 	}
 }

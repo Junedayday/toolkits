@@ -80,6 +80,11 @@ func TestSplitComments(t *testing.T) {
 		outLeadingComments:  "/* before */ ",
 		outTrailingComments: " /* bar */",
 	}, {
+		input:               "/* before1 */ /* before2 */ foo /* after1 */ /* after2 */",
+		outSQL:              "foo",
+		outLeadingComments:  "/* before1 */ /* before2 */ ",
+		outTrailingComments: " /* after1 */ /* after2 */",
+	}, {
 		input:               "/** before */ foo /** bar */",
 		outSQL:              "foo",
 		outLeadingComments:  "/** before */ ",
@@ -110,11 +115,8 @@ func TestSplitComments(t *testing.T) {
 		outLeadingComments:  "",
 		outTrailingComments: "",
 	}, {
-		input: " foo ",
-		// NOTE(dweitzman): Preserving leading whitespace because the WhereClause entries for 'update'
-		// in exec_cases.txt have leading whitespace and if we trim it here that will change. It may be
-		// safe to change, but changing query plans is not an intended effect of this diff.
-		outSQL:              " foo",
+		input:               " foo ",
+		outSQL:              "foo",
 		outLeadingComments:  "",
 		outTrailingComments: "",
 	}}
@@ -203,6 +205,85 @@ a`,
 	}}
 	for _, testCase := range testCases {
 		gotSQL := StripLeadingComments(testCase.input)
+
+		if gotSQL != testCase.outSQL {
+			t.Errorf("test input: '%s', got SQL\n%+v, want\n%+v", testCase.input, gotSQL, testCase.outSQL)
+		}
+	}
+}
+
+func TestRemoveComments(t *testing.T) {
+	var testCases = []struct {
+		input, outSQL string
+	}{{
+		input:  "/",
+		outSQL: "/",
+	}, {
+		input:  "*/",
+		outSQL: "*/",
+	}, {
+		input:  "/*/",
+		outSQL: "/*/",
+	}, {
+		input:  "/*a",
+		outSQL: "/*a",
+	}, {
+		input:  "/*a*",
+		outSQL: "/*a*",
+	}, {
+		input:  "/*a**",
+		outSQL: "/*a**",
+	}, {
+		input:  "/*b**a*/",
+		outSQL: "",
+	}, {
+		input:  "/*a*/",
+		outSQL: "",
+	}, {
+		input:  "/**/",
+		outSQL: "",
+	}, {
+		input:  "/*!*/",
+		outSQL: "",
+	}, {
+		input:  "/*!a*/",
+		outSQL: "",
+	}, {
+		input:  "/*b*/ /*a*/",
+		outSQL: "",
+	}, {
+		input: `/*b*/ --foo
+bar`,
+		outSQL: "bar",
+	}, {
+		input:  "foo /* bar */",
+		outSQL: "foo",
+	}, {
+		input:  "foo /* bar */ baz",
+		outSQL: "foo  baz",
+	}, {
+		input:  "/* foo */ bar",
+		outSQL: "bar",
+	}, {
+		input:  "-- /* foo */ bar",
+		outSQL: "",
+	}, {
+		input:  "foo -- bar */",
+		outSQL: "foo -- bar */",
+	}, {
+		input: `/*
+foo */ bar`,
+		outSQL: "bar",
+	}, {
+		input: `-- foo bar
+a`,
+		outSQL: "a",
+	}, {
+		input:  `-- foo bar`,
+		outSQL: "",
+	}}
+	for _, testCase := range testCases {
+		gotSQL := StripComments(testCase.input)
 
 		if gotSQL != testCase.outSQL {
 			t.Errorf("test input: '%s', got SQL\n%+v, want\n%+v", testCase.input, gotSQL, testCase.outSQL)
@@ -342,5 +423,32 @@ func TestExtractCommentDirectives(t *testing.T) {
 
 	if d.IsSet("six") {
 		t.Errorf("d.IsSet(six) should be false")
+	}
+}
+
+func TestSkipQueryPlanCacheDirective(t *testing.T) {
+	stmt, _ := Parse("insert /*vt+ SKIP_QUERY_PLAN_CACHE=1 */ into user(id) values (1), (2)")
+	if !SkipQueryPlanCacheDirective(stmt) {
+		t.Errorf("d.SkipQueryPlanCacheDirective(stmt) should be true")
+	}
+
+	stmt, _ = Parse("insert into user(id) values (1), (2)")
+	if SkipQueryPlanCacheDirective(stmt) {
+		t.Errorf("d.SkipQueryPlanCacheDirective(stmt) should be false")
+	}
+
+	stmt, _ = Parse("update /*vt+ SKIP_QUERY_PLAN_CACHE=1 */ users set name=1")
+	if !SkipQueryPlanCacheDirective(stmt) {
+		t.Errorf("d.SkipQueryPlanCacheDirective(stmt) should be true")
+	}
+
+	stmt, _ = Parse("select /*vt+ SKIP_QUERY_PLAN_CACHE=1 */ * from users")
+	if !SkipQueryPlanCacheDirective(stmt) {
+		t.Errorf("d.SkipQueryPlanCacheDirective(stmt) should be true")
+	}
+
+	stmt, _ = Parse("delete /*vt+ SKIP_QUERY_PLAN_CACHE=1 */ from users")
+	if !SkipQueryPlanCacheDirective(stmt) {
+		t.Errorf("d.SkipQueryPlanCacheDirective(stmt) should be true")
 	}
 }

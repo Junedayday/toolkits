@@ -31,6 +31,7 @@ func TestPreview(t *testing.T) {
 	}{
 		{"select ...", StmtSelect},
 		{"    select ...", StmtSelect},
+		{"(select ...", StmtSelect},
 		{"insert ...", StmtInsert},
 		{"replace ....", StmtReplace},
 		{"   update ...", StmtUpdate},
@@ -69,6 +70,7 @@ func TestPreview(t *testing.T) {
 		{"unknown", StmtUnknown},
 
 		{"/* leading comment */ select ...", StmtSelect},
+		{"/* leading comment */ (select ...", StmtSelect},
 		{"/* leading comment */ /* leading comment 2 */ select ...", StmtSelect},
 		{"/*! MySQL-specific comment */", StmtComment},
 		{"/*!50708 MySQL-version comment */", StmtComment},
@@ -265,6 +267,12 @@ func TestNewPlanValue(t *testing.T) {
 		out: sqltypes.PlanValue{Value: sqltypes.NewVarBinary("strval")},
 	}, {
 		in: &SQLVal{
+			Type: BitVal,
+			Val:  []byte("01100001"),
+		},
+		err: "expression is too complex",
+	}, {
+		in: &SQLVal{
 			Type: HexVal,
 			Val:  []byte("3131"),
 		},
@@ -321,14 +329,14 @@ func TestNewPlanValue(t *testing.T) {
 	}}
 	for _, tc := range tcases {
 		got, err := NewPlanValue(tc.in)
-		if err != nil {
+		if tc.err != "" {
 			if !strings.Contains(err.Error(), tc.err) {
 				t.Errorf("NewPlanValue(%s) error: %v, want '%s'", String(tc.in), err, tc.err)
 			}
 			continue
 		}
-		if tc.err != "" {
-			t.Errorf("NewPlanValue(%s) error: nil, want '%s'", String(tc.in), tc.err)
+		if err != nil {
+			t.Error(err)
 			continue
 		}
 		if !reflect.DeepEqual(got, tc.out) {
@@ -337,31 +345,10 @@ func TestNewPlanValue(t *testing.T) {
 	}
 }
 
-func TestStringIn(t *testing.T) {
-	testcases := []struct {
-		in1 string
-		in2 []string
-		out bool
-	}{{
-		in1: "v1",
-		in2: []string{"v1", "v2"},
-		out: true,
-	}, {
-		in1: "v0",
-		in2: []string{"v1", "v2"},
-	}}
-	for _, tc := range testcases {
-		out := StringIn(tc.in1, tc.in2...)
-		if out != tc.out {
-			t.Errorf("StringIn(%v,%v): %#v, want %#v", tc.in1, tc.in2, out, tc.out)
-		}
-	}
-}
-
 func TestExtractSetValues(t *testing.T) {
 	testcases := []struct {
 		sql   string
-		out   map[string]interface{}
+		out   map[SetKey]interface{}
 		scope string
 		err   string
 	}{{
@@ -375,39 +362,120 @@ func TestExtractSetValues(t *testing.T) {
 		err: "invalid syntax: 1 + 1",
 	}, {
 		sql: "set transaction_mode='single'",
-		out: map[string]interface{}{"transaction_mode": "single"},
+		out: map[SetKey]interface{}{{Key: "transaction_mode", Scope: ImplicitStr}: "single"},
 	}, {
 		sql: "set autocommit=1",
-		out: map[string]interface{}{"autocommit": int64(1)},
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: ImplicitStr}: int64(1)},
+	}, {
+		sql: "set autocommit=true",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: ImplicitStr}: int64(1)},
+	}, {
+		sql: "set autocommit=false",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: ImplicitStr}: int64(0)},
+	}, {
+		sql: "set autocommit=on",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: ImplicitStr}: "on"},
+	}, {
+		sql: "set autocommit=off",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: ImplicitStr}: "off"},
+	}, {
+		sql: "set @@global.autocommit=1",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: GlobalStr}: int64(1)},
+	}, {
+		sql: "set @@global.autocommit=1",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: GlobalStr}: int64(1)},
+	}, {
+		sql: "set @@session.autocommit=1",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: SessionStr}: int64(1)},
+	}, {
+		sql: "set @@session.`autocommit`=1",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: SessionStr}: int64(1)},
+	}, {
+		sql: "set @@session.'autocommit'=1",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: SessionStr}: int64(1)},
+	}, {
+		sql: "set @@session.\"autocommit\"=1",
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: SessionStr}: int64(1)},
+	}, {
+		sql: "set @@session.'\"autocommit'=1",
+		out: map[SetKey]interface{}{{Key: "\"autocommit", Scope: SessionStr}: int64(1)},
+	}, {
+		sql: "set @@session.`autocommit'`=1",
+		out: map[SetKey]interface{}{{Key: "autocommit'", Scope: SessionStr}: int64(1)},
 	}, {
 		sql: "set AUTOCOMMIT=1",
-		out: map[string]interface{}{"autocommit": int64(1)},
+		out: map[SetKey]interface{}{{Key: "autocommit", Scope: ImplicitStr}: int64(1)},
 	}, {
 		sql: "SET character_set_results = NULL",
-		out: map[string]interface{}{"character_set_results": nil},
+		out: map[SetKey]interface{}{{Key: "character_set_results", Scope: ImplicitStr}: nil},
 	}, {
 		sql: "SET foo = 0x1234",
 		err: "invalid value type: 0x1234",
 	}, {
 		sql: "SET names utf8",
-		out: map[string]interface{}{"names": "utf8"},
+		out: map[SetKey]interface{}{{Key: "names", Scope: ImplicitStr}: "utf8"},
 	}, {
 		sql: "SET names ascii collate ascii_bin",
-		out: map[string]interface{}{"names": "ascii"},
+		out: map[SetKey]interface{}{{Key: "names", Scope: ImplicitStr}: "ascii"},
 	}, {
 		sql: "SET charset default",
-		out: map[string]interface{}{"charset": "default"},
+		out: map[SetKey]interface{}{{Key: "charset", Scope: ImplicitStr}: "default"},
 	}, {
 		sql: "SET character set ascii",
-		out: map[string]interface{}{"charset": "ascii"},
+		out: map[SetKey]interface{}{{Key: "charset", Scope: ImplicitStr}: "ascii"},
 	}, {
 		sql:   "SET SESSION wait_timeout = 3600",
-		out:   map[string]interface{}{"wait_timeout": int64(3600)},
-		scope: "session",
+		out:   map[SetKey]interface{}{{Key: "wait_timeout", Scope: ImplicitStr}: int64(3600)},
+		scope: SessionStr,
 	}, {
 		sql:   "SET GLOBAL wait_timeout = 3600",
-		out:   map[string]interface{}{"wait_timeout": int64(3600)},
-		scope: "global",
+		out:   map[SetKey]interface{}{{Key: "wait_timeout", Scope: ImplicitStr}: int64(3600)},
+		scope: GlobalStr,
+	}, {
+		sql:   "set session transaction isolation level repeatable read",
+		out:   map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: IsolationLevelRepeatableRead},
+		scope: SessionStr,
+	}, {
+		sql:   "set session transaction isolation level read committed",
+		out:   map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: IsolationLevelReadCommitted},
+		scope: SessionStr,
+	}, {
+		sql:   "set session transaction isolation level read uncommitted",
+		out:   map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: IsolationLevelReadUncommitted},
+		scope: SessionStr,
+	}, {
+		sql:   "set session transaction isolation level serializable",
+		out:   map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: IsolationLevelSerializable},
+		scope: SessionStr,
+	}, {
+		sql: "set transaction isolation level serializable",
+		out: map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: IsolationLevelSerializable},
+	}, {
+		sql: "set transaction read only",
+		out: map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: TxReadOnly},
+	}, {
+		sql: "set transaction read write",
+		out: map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: TxReadWrite},
+	}, {
+		sql:   "set session transaction read write",
+		out:   map[SetKey]interface{}{{Key: TransactionStr, Scope: ImplicitStr}: TxReadWrite},
+		scope: SessionStr,
+	}, {
+		sql:   "set session tx_read_only = 0",
+		out:   map[SetKey]interface{}{{Key: "tx_read_only", Scope: ImplicitStr}: int64(0)},
+		scope: SessionStr,
+	}, {
+		sql:   "set session tx_read_only = 1",
+		out:   map[SetKey]interface{}{{Key: "tx_read_only", Scope: ImplicitStr}: int64(1)},
+		scope: SessionStr,
+	}, {
+		sql:   "set session sql_safe_updates = 0",
+		out:   map[SetKey]interface{}{{Key: "sql_safe_updates", Scope: ImplicitStr}: int64(0)},
+		scope: SessionStr,
+	}, {
+		sql:   "set session sql_safe_updates = 1",
+		out:   map[SetKey]interface{}{{Key: "sql_safe_updates", Scope: ImplicitStr}: int64(1)},
+		scope: SessionStr,
 	}}
 	for _, tcase := range testcases {
 		out, _, err := ExtractSetValues(tcase.sql)

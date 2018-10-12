@@ -526,17 +526,21 @@ func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql 
 		return &sqltypes.Result{}, vterrors.New(vtrpcpb.Code_INVALID_ARGUMENT, err.Error())
 	}
 
-	if scope == "global" {
+	if scope == sqlparser.GlobalStr {
 		return &sqltypes.Result{}, vterrors.New(vtrpcpb.Code_INVALID_ARGUMENT, "unsupported in set: global")
 	}
 
 	for k, v := range vals {
-		switch k {
+		if k.Scope == sqlparser.GlobalStr {
+			return &sqltypes.Result{}, vterrors.New(vtrpcpb.Code_INVALID_ARGUMENT, "unsupported in set: global")
+		}
+		switch k.Key {
 		case "autocommit":
-			val, ok := v.(int64)
-			if !ok {
-				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value type for autocommit: %T", v)
+			val, err := validateSetOnOff(v, k.Key)
+			if err != nil {
+				return nil, err
 			}
+
 			switch val {
 			case 0:
 				safeSession.Autocommit = false
@@ -582,6 +586,18 @@ func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql 
 			default:
 				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value for skip_query_plan_cache: %d", val)
 			}
+		case "sql_safe_updates":
+			val, err := validateSetOnOff(v, k.Key)
+			if err != nil {
+				return nil, err
+			}
+
+			switch val {
+			case 0, 1:
+				// no op
+			default:
+				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value for sql_safe_updates: %d", val)
+			}
 		case "transaction_mode":
 			val, ok := v.(string)
 			if !ok {
@@ -592,6 +608,35 @@ func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql 
 				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "invalid transaction_mode: %s", val)
 			}
 			safeSession.TransactionMode = vtgatepb.TransactionMode(out)
+		case sqlparser.TransactionStr:
+			// Parser ensures it's well-formed.
+
+			// TODO: This is a NOP, modeled off of tx_isolation and tx_read_only.  It's incredibly
+			// dangerous that it's a NOP, but fixing that is left to. Note that vtqueryservice needs
+			// to be updated as well:
+			// https://github.com/vitessio/vitess/issues/4127
+		case "tx_isolation":
+			val, ok := v.(string)
+			if !ok {
+				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value type for tx_isolation: %T", v)
+			}
+			switch val {
+			case "repeatable read", "read committed", "read uncommitted", "serializable":
+				// TODO (4127): This is a dangerous NOP.
+			default:
+				return nil, fmt.Errorf("unexpected value for tx_isolation: %v", val)
+			}
+		case "tx_read_only":
+			val, err := validateSetOnOff(v, k.Key)
+			if err != nil {
+				return nil, err
+			}
+			switch val {
+			case 0, 1:
+				// TODO (4127): This is a dangerous NOP.
+			default:
+				return nil, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value for tx_read_only: %d", val)
+			}
 		case "workload":
 			val, ok := v.(string)
 			if !ok {
@@ -669,6 +714,26 @@ func (e *Executor) handleSet(ctx context.Context, safeSession *SafeSession, sql 
 	return &sqltypes.Result{}, nil
 }
 
+func validateSetOnOff(v interface{}, typ string) (int64, error) {
+	var val int64
+	switch v := v.(type) {
+	case int64:
+		val = v
+	case string:
+		lcaseV := strings.ToLower(v)
+		if lcaseV == "on" {
+			val = 1
+		} else if lcaseV == "off" {
+			val = 0
+		} else {
+			return -1, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value for %s: %s", typ, v)
+		}
+	default:
+		return -1, vterrors.Errorf(vtrpcpb.Code_INVALID_ARGUMENT, "unexpected value type for %s: %T", typ, v)
+	}
+	return val, nil
+}
+
 func (e *Executor) handleShow(ctx context.Context, safeSession *SafeSession, sql string, bindVars map[string]*querypb.BindVariable, dest key.Destination, destKeyspace string, destTabletType topodatapb.TabletType, logStats *LogStats) (*sqltypes.Result, error) {
 	stmt, err := sqlparser.Parse(sql)
 	if err != nil {
@@ -683,6 +748,22 @@ func (e *Executor) handleShow(ctx context.Context, safeSession *SafeSession, sql
 	defer func() { logStats.ExecuteTime = time.Since(execStart) }()
 
 	switch show.Type {
+	case sqlparser.KeywordString(sqlparser.COLLATION), sqlparser.KeywordString(sqlparser.VARIABLES):
+		if destKeyspace == "" {
+			keyspaces, err := e.resolver.resolver.GetAllKeyspaces(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if len(keyspaces) == 0 {
+				return nil, vterrors.Errorf(vtrpcpb.Code_FAILED_PRECONDITION, "no keyspaces available")
+			}
+			return e.handleOther(ctx, safeSession, sql, bindVars, dest, keyspaces[0], destTabletType, logStats)
+		}
+	case sqlparser.KeywordString(sqlparser.TABLES):
+		if show.ShowTablesOpt != nil && show.ShowTablesOpt.DbName != "" {
+			show.ShowTablesOpt.DbName = ""
+		}
+		sql = sqlparser.String(show)
 	case sqlparser.KeywordString(sqlparser.DATABASES), sqlparser.KeywordString(sqlparser.VITESS_KEYSPACES):
 		keyspaces, err := e.resolver.resolver.GetAllKeyspaces(ctx)
 		if err != nil {
@@ -746,6 +827,14 @@ func (e *Executor) handleShow(ctx context.Context, safeSession *SafeSession, sql
 		}
 		return &sqltypes.Result{
 			Fields:       buildVarCharFields("Cell", "Keyspace", "Shard", "TabletType", "State", "Alias", "Hostname"),
+			Rows:         rows,
+			RowsAffected: uint64(len(rows)),
+		}, nil
+	case sqlparser.KeywordString(sqlparser.VITESS_TARGET):
+		var rows [][]sqltypes.Value
+		rows = append(rows, buildVarCharRow(safeSession.TargetString))
+		return &sqltypes.Result{
+			Fields:       buildVarCharFields("Target"),
 			Rows:         rows,
 			RowsAffected: uint64(len(rows)),
 		}, nil
@@ -1168,21 +1257,22 @@ func (e *Executor) getPlan(vcursor *vcursorImpl, sql string, comments sqlparser.
 	if result, ok := e.plans.Get(key); ok {
 		return result.(*engine.Plan), nil
 	}
-	if !e.normalize {
-		plan, err := planbuilder.Build(sql, vcursor)
-		if err != nil {
-			return nil, err
-		}
-		if !skipQueryPlanCache {
-			e.plans.Set(key, plan)
-		}
-		return plan, nil
-	}
-	// Normalize and retry.
 	stmt, err := sqlparser.Parse(sql)
 	if err != nil {
 		return nil, err
 	}
+	if !e.normalize {
+		plan, err := planbuilder.BuildFromStmt(sql, stmt, vcursor)
+		if err != nil {
+			return nil, err
+		}
+		if !skipQueryPlanCache && !sqlparser.SkipQueryPlanCacheDirective(stmt) {
+			e.plans.Set(key, plan)
+		}
+		return plan, nil
+	}
+
+	// Normalize and retry.
 	sqlparser.Normalize(stmt, bindVars, "vtg")
 	normalized := sqlparser.String(stmt)
 
@@ -1202,7 +1292,7 @@ func (e *Executor) getPlan(vcursor *vcursorImpl, sql string, comments sqlparser.
 	if err != nil {
 		return nil, err
 	}
-	if !skipQueryPlanCache {
+	if !skipQueryPlanCache && !sqlparser.SkipQueryPlanCacheDirective(stmt) {
 		e.plans.Set(normkey, plan)
 	}
 	return plan, nil

@@ -82,6 +82,11 @@ type BinlogEvent interface {
 	// Timestamp returns the timestamp from the event header.
 	Timestamp() uint32
 
+	// NextPosition return Next binlog event position from the event header.
+	NextPosition() int64
+
+	Rotate(BinlogFormat) (string, int64, error)
+
 	// Format returns a BinlogFormat struct based on the event data.
 	// This is only valid if IsFormatDescription() returns true.
 	Format() (BinlogFormat, error)
@@ -119,6 +124,9 @@ type BinlogEvent interface {
 	// checksum stripped off, if any. If there is no checksum, it returns
 	// the same event and a nil checksum.
 	StripChecksum(BinlogFormat) (ev BinlogEvent, checksum []byte, err error)
+
+	// IsPseudo is for custom implemetations of GTID.
+	IsPseudo() bool
 }
 
 // BinlogFormat contains relevant data from the FORMAT_DESCRIPTION_EVENT.

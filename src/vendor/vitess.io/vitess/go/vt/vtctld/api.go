@@ -81,7 +81,7 @@ func handleCollection(collection string, getFunc func(*http.Request) (interface{
 		// Get the requested object.
 		obj, err := getFunc(r)
 		if err != nil {
-			if err == topo.ErrNoNode {
+			if topo.IsErrType(err, topo.NoNode) {
 				http.NotFound(w, r)
 				return nil
 			}
@@ -276,13 +276,13 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 				}
 				if cell != "" {
 					result, err := ts.FindAllTabletAliasesInShardByCell(ctx, keyspace, shard, []string{cell})
-					if err != nil && err != topo.ErrPartialResult {
+					if err != nil && !topo.IsErrType(err, topo.PartialResult) {
 						return result, err
 					}
 					return result, nil
 				}
 				result, err := ts.FindAllTabletAliasesInShard(ctx, keyspace, shard)
-				if err != nil && err != topo.ErrPartialResult {
+				if err != nil && !topo.IsErrType(err, topo.PartialResult) {
 					return result, err
 				}
 				return result, nil
@@ -454,8 +454,7 @@ func initAPI(ctx context.Context, ts *topo.Server, actions *ActionRepository, re
 		logstream := logutil.NewMemoryLogger()
 
 		wr := wrangler.New(logstream, ts, tmClient)
-		// TODO(enisoc): Context for run command should be request-scoped.
-		err := vtctl.RunCommand(ctx, wr, args)
+		err := vtctl.RunCommand(r.Context(), wr, args)
 		if err != nil {
 			resp.Error = err.Error()
 		}

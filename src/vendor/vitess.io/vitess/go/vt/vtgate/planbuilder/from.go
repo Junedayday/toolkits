@@ -276,10 +276,8 @@ func (pb *primitiveBuilder) join(rpb *primitiveBuilder, ajoin *sqlparser.JoinTab
 		}
 
 		// Both l & r routes point to the same shard.
-		if lRoute.ERoute.Opcode == engine.SelectEqualUnique && rRoute.ERoute.Opcode == engine.SelectEqualUnique {
-			if valEqual(lRoute.condition, rRoute.condition) {
-				return pb.mergeRoutes(rpb, ajoin)
-			}
+		if lRoute.isSameShardedRoute(rRoute) == nil {
+			return pb.mergeRoutes(rpb, ajoin)
 		}
 	}
 
@@ -315,13 +313,12 @@ func (pb *primitiveBuilder) mergeRoutes(rpb *primitiveBuilder, ajoin *sqlparser.
 	if ajoin == nil {
 		return nil
 	}
+	_, expr, err := pb.findOrigin(ajoin.Condition.On)
+	if err != nil {
+		return err
+	}
+	ajoin.Condition.On = expr
 	for _, filter := range splitAndExpression(nil, ajoin.Condition.On) {
-		// If VTGate evolves, this section should be rewritten
-		// to use processExpr.
-		_, err = pb.findOrigin(filter)
-		if err != nil {
-			return err
-		}
 		lRoute.UpdatePlan(pb, filter)
 	}
 	return nil

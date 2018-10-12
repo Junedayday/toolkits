@@ -35,6 +35,7 @@ func defaultTestOpts() *Options {
 		ReplicationMode: "ROW",
 		NumShards:       4,
 		Normalize:       true,
+		StrictDDL:       true,
 	}
 }
 
@@ -142,6 +143,16 @@ func TestOptions(t *testing.T) {
 	}
 
 	testExplain("options", opts, t)
+}
+func TestTarget(t *testing.T) {
+	opts := &Options{
+		ReplicationMode: "ROW",
+		NumShards:       4,
+		Normalize:       false,
+		Target:          "ks_sharded/40-80",
+	}
+
+	testExplain("target", opts, t)
 }
 
 func TestComments(t *testing.T) {

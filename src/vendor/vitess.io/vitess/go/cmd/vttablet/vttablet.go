@@ -36,7 +36,7 @@ import (
 
 var (
 	enforceTableACLConfig = flag.Bool("enforce-tableacl-config", false, "if this flag is true, vttablet will fail to start if a valid tableacl config does not exist")
-	tableACLConfig        = flag.String("table-acl-config", "", "path to table access checker config file")
+	tableACLConfig        = flag.String("table-acl-config", "", "path to table access checker config file; send SIGHUP to reload this file")
 	tabletPath            = flag.String("tablet-path", "", "tablet alias")
 
 	agent *tabletmanager.ActionAgent
@@ -47,9 +47,7 @@ func init() {
 }
 
 func main() {
-	dbconfigFlags := dbconfigs.AppConfig | dbconfigs.AppDebugConfig | dbconfigs.AllPrivsConfig | dbconfigs.DbaConfig |
-		dbconfigs.FilteredConfig | dbconfigs.ReplConfig
-	dbconfigs.RegisterFlags(dbconfigFlags)
+	dbconfigs.RegisterFlags(dbconfigs.All...)
 	mysqlctl.RegisterFlags()
 
 	servenv.ParseFlags("vttablet")
@@ -69,13 +67,30 @@ func main() {
 	if err != nil {
 		log.Exitf("failed to parse -tablet-path: %v", err)
 	}
-
-	mycnf, err := mysqlctl.NewMycnfFromFlags(tabletAlias.Uid)
-	if err != nil {
-		log.Exitf("mycnf read failed: %v", err)
+	if tabletAlias.Uid < 0 {
+		log.Exitf("invalid tablet id: %d", tabletAlias.Uid)
 	}
 
-	dbcfgs, err := dbconfigs.Init(mycnf.SocketFile, dbconfigFlags)
+	var mycnf *mysqlctl.Mycnf
+	var socketFile string
+	// If no connection parameters were specified, load the mycnf file
+	// and use the socket from it. If connection parameters were specified,
+	// we assume that the mysql is not local, and we skip loading mycnf.
+	// This also means that backup and restore will not be allowed.
+	if !dbconfigs.HasConnectionParams() {
+		var err error
+		if mycnf, err = mysqlctl.NewMycnfFromFlags(tabletAlias.Uid); err != nil {
+			log.Exitf("mycnf read failed: %v", err)
+		}
+		socketFile = mycnf.SocketFile
+	} else {
+		log.Info("connection parameters were specified. Not loading my.cnf.")
+	}
+
+	// If connection parameters were specified, socketFile will be empty.
+	// Otherwise, the socketFile (read from mycnf) will be used to initialize
+	// dbconfigs.
+	dbcfgs, err := dbconfigs.Init(socketFile)
 	if err != nil {
 		log.Warning(err)
 	}
@@ -100,24 +115,12 @@ func main() {
 		qsc.StopService()
 	})
 
-	// tabletacl.Init loads ACL from file if *tableACLConfig is not empty
-	err = tableacl.Init(
-		*tableACLConfig,
-		func() {
-			qsc.ClearQueryPlanCache()
-		},
-	)
-	if err != nil {
-		log.Errorf("Fail to initialize Table ACL: %v", err)
-		if *enforceTableACLConfig {
-			log.Exit("Need a valid initial Table ACL when enforce-tableacl-config is set, exiting.")
-		}
-	}
+	qsc.InitACL(*tableACLConfig, *enforceTableACLConfig)
 
 	// Create mysqld and register the health reporter (needs to be done
 	// before initializing the agent, so the initial health check
 	// done by the agent has the right reporter)
-	mysqld := mysqlctl.NewMysqld(mycnf, dbcfgs, dbconfigFlags)
+	mysqld := mysqlctl.NewMysqld(dbcfgs)
 	servenv.OnClose(mysqld.Close)
 
 	// Depends on both query and updateStream.
@@ -125,7 +128,7 @@ func main() {
 	if servenv.GRPCPort != nil {
 		gRPCPort = int32(*servenv.GRPCPort)
 	}
-	agent, err = tabletmanager.NewActionAgent(context.Background(), ts, mysqld, qsc, tabletAlias, *dbcfgs, mycnf, int32(*servenv.Port), gRPCPort)
+	agent, err = tabletmanager.NewActionAgent(context.Background(), ts, mysqld, qsc, tabletAlias, dbcfgs, mycnf, int32(*servenv.Port), gRPCPort)
 	if err != nil {
 		log.Exitf("NewActionAgent() failed: %v", err)
 	}

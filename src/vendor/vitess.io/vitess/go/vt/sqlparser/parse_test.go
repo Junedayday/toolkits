@@ -19,7 +19,9 @@ package sqlparser
 import (
 	"bytes"
 	"fmt"
+	"math/rand"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -32,6 +34,9 @@ var (
 		output: "select 1 from dual",
 	}, {
 		input: "select 1 from t",
+	}, {
+		input:  "select * from information_schema.columns",
+		output: "select * from information_schema.`columns`",
 	}, {
 		input: "select .1 from t",
 	}, {
@@ -600,6 +605,9 @@ var (
 	}, {
 		input: "insert /* select */ into a select b, c from d",
 	}, {
+		input:  "insert /* it accepts columns with keyword action */ into a(action, b) values (1, 2)",
+		output: "insert /* it accepts columns with keyword action */ into a(`action`, b) values (1, 2)",
+	}, {
 		input:  "insert /* no cols & paren select */ into a(select * from t)",
 		output: "insert /* no cols & paren select */ into a select * from t",
 	}, {
@@ -679,7 +687,18 @@ var (
 	}, {
 		input: "set character_set_results = utf8",
 	}, {
+		input: "set @@session.autocommit = true",
+	}, {
+		input: "set @@session.`autocommit` = true",
+	}, {
+		input: "set @@session.'autocommit' = true",
+	}, {
+		input: "set @@session.\"autocommit\" = true",
+	}, {
 		input:  "set names utf8 collate foo",
+		output: "set names 'utf8'",
+	}, {
+		input:  "set names utf8 collate 'foo'",
 		output: "set names 'utf8'",
 	}, {
 		input:  "set character set utf8",
@@ -700,6 +719,40 @@ var (
 		input: "set /* list */ a = 3, b = 4",
 	}, {
 		input: "set /* mixed list */ a = 3, names 'utf8', charset 'ascii', b = 4",
+	}, {
+		input: "set session transaction isolation level repeatable read",
+	}, {
+		input: "set transaction isolation level repeatable read",
+	}, {
+		input: "set global transaction isolation level repeatable read",
+	}, {
+		input: "set transaction isolation level repeatable read",
+	}, {
+		input: "set transaction isolation level read committed",
+	}, {
+		input: "set transaction isolation level read uncommitted",
+	}, {
+		input: "set transaction isolation level serializable",
+	}, {
+		input: "set transaction read write",
+	}, {
+		input: "set transaction read only",
+	}, {
+		input: "set tx_read_only = 1",
+	}, {
+		input: "set tx_read_only = 0",
+	}, {
+		input: "set tx_isolation = 'repeatable read'",
+	}, {
+		input: "set tx_isolation = 'read committed'",
+	}, {
+		input: "set tx_isolation = 'read uncommitted'",
+	}, {
+		input: "set tx_isolation = 'serializable'",
+	}, {
+		input: "set sql_safe_updates = 0",
+	}, {
+		input: "set sql_safe_updates = 1",
 	}, {
 		input:  "alter ignore table a add foo",
 		output: "alter table a",
@@ -943,6 +996,9 @@ var (
 		input:  "show collation",
 		output: "show collation",
 	}, {
+		input:  "show collation where `Charset` = 'utf8' and `Collation` = 'utf8_bin'",
+		output: "show collation where `Charset` = 'utf8' and `Collation` = 'utf8_bin'",
+	}, {
 		input:  "show create database d",
 		output: "show create database",
 	}, {
@@ -1025,7 +1081,7 @@ var (
 		output: "show processlist",
 	}, {
 		input:  "show full processlist",
-		output: "show full",
+		output: "show processlist",
 	}, {
 		input:  "show profile cpu for query 1",
 		output: "show profile",
@@ -1054,11 +1110,36 @@ var (
 		input:  "show table status",
 		output: "show table",
 	}, {
-		input:  "show tables",
-		output: "show tables",
+		input: "show tables",
 	}, {
-		input:  "show full tables",
-		output: "show full",
+		input: "show tables like '%keyspace%'",
+	}, {
+		input: "show tables where 1 = 0",
+	}, {
+		input: "show tables from a",
+	}, {
+		input: "show tables from a where 1 = 0",
+	}, {
+		input: "show tables from a like '%keyspace%'",
+	}, {
+		input: "show full tables",
+	}, {
+		input: "show full tables from a",
+	}, {
+		input:  "show full tables in a",
+		output: "show full tables from a",
+	}, {
+		input: "show full tables from a like '%keyspace%'",
+	}, {
+		input: "show full tables from a where 1 = 0",
+	}, {
+		input: "show full tables like '%keyspace%'",
+	}, {
+		input: "show full tables where 1 = 0",
+	}, {
+		input: "show full columns from a like '%'",
+	}, {
+		input: "show full columns from messages from test_keyspace like '%'",
 	}, {
 		input:  "show triggers",
 		output: "show triggers",
@@ -1125,6 +1206,12 @@ var (
 		input:  "optimize foo",
 		output: "otheradmin",
 	}, {
+		input:  "lock tables foo",
+		output: "otheradmin",
+	}, {
+		input:  "unlock tables foo",
+		output: "otheradmin",
+	}, {
 		input: "select /* EQ true */ 1 from t where a = true",
 	}, {
 		input: "select /* EQ false */ 1 from t where a = false",
@@ -1182,6 +1269,11 @@ var (
 	}, {
 		input:  "select 1 from t where foo = _binary'bar'",
 		output: "select 1 from t where foo = _binary 'bar'",
+	}, {
+		input: "select 1 from t where foo = _utf8mb4 'bar'",
+	}, {
+		input:  "select 1 from t where foo = _utf8mb4'bar'",
+		output: "select 1 from t where foo = _utf8mb4 'bar'",
 	}, {
 		input: "select match(a) against ('foo') from t",
 	}, {
@@ -1264,6 +1356,36 @@ func TestValid(t *testing.T) {
 			return true, nil
 		}, tree)
 	}
+}
+
+// Ensure there is no corruption from using a pooled yyParserImpl in Parse.
+func TestValidParallel(t *testing.T) {
+	parallelism := 100
+	numIters := 1000
+
+	wg := sync.WaitGroup{}
+	wg.Add(parallelism)
+	for i := 0; i < parallelism; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numIters; j++ {
+				tcase := validSQL[rand.Intn(len(validSQL))]
+				if tcase.output == "" {
+					tcase.output = tcase.input
+				}
+				tree, err := Parse(tcase.input)
+				if err != nil {
+					t.Errorf("Parse(%q) err: %v, want nil", tcase.input, err)
+					continue
+				}
+				out := String(tree)
+				if out != tcase.output {
+					t.Errorf("Parse(%q) = %q, want: %q", tcase.input, out, tcase.output)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestCaseSensitivity(t *testing.T) {
@@ -1543,6 +1665,12 @@ func TestConvert(t *testing.T) {
 	}, {
 		input:  "select convert('abc', decimal(4+9)) from t",
 		output: "syntax error at position 33",
+	}, {
+		input:  "/* a comment */",
+		output: "empty statement",
+	}, {
+		input:  "set transaction isolation level 12345",
+		output: "syntax error at position 38 near '12345'",
 	}}
 
 	for _, tcase := range invalidSQL {
@@ -1746,7 +1874,26 @@ func TestCreateTable(t *testing.T) {
 			"	c int,\n" +
 			"	primary key (id, username),\n" +
 			"	unique key by_abc (a, b, c),\n" +
+			"	unique key (a, b, c),\n" +
 			"	key by_email (email(10), username)\n" +
+			")",
+
+		// foreign keys
+		"create table t (\n" +
+			"	id int auto_increment,\n" +
+			"	username varchar,\n" +
+			"	k int,\n" +
+			"	Z int,\n" +
+			"	primary key (id, username),\n" +
+			"	key by_email (email(10), username),\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b),\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on delete restrict,\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on delete no action,\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on delete cascade on update set default,\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on delete set default on update set null,\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on delete set null on update restrict,\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on update no action,\n" +
+			"	constraint second_ibfk_1 foreign key (k, j) references simple (a, b) on update cascade\n" +
 			")",
 
 		// table options
@@ -1824,7 +1971,52 @@ func TestCreateTable(t *testing.T) {
 			"	unique key by_username2 (username) key_block_size 8,\n" +
 			"	unique by_username3 (username) key_block_size 4\n" +
 			")",
+	}, {
+		// test current_timestamp with and without ()
+		input: "create table t (\n" +
+			"	time1 timestamp default current_timestamp,\n" +
+			"	time2 timestamp default current_timestamp(),\n" +
+			"	time3 timestamp default current_timestamp on update current_timestamp,\n" +
+			"	time4 timestamp default current_timestamp() on update current_timestamp()\n" +
+			")",
+		output: "create table t (\n" +
+			"	time1 timestamp default current_timestamp,\n" +
+			"	time2 timestamp default current_timestamp,\n" +
+			"	time3 timestamp default current_timestamp on update current_timestamp,\n" +
+			"	time4 timestamp default current_timestamp on update current_timestamp\n" +
+			")",
 	},
+	}
+	for _, tcase := range testCases {
+		tree, err := ParseStrictDDL(tcase.input)
+		if err != nil {
+			t.Errorf("input: %s, err: %v", tcase.input, err)
+			continue
+		}
+		if got, want := String(tree.(*DDL)), tcase.output; got != want {
+			t.Errorf("Parse(%s):\n%s, want\n%s", tcase.input, got, want)
+		}
+	}
+}
+
+func TestCreateTableLike(t *testing.T) {
+	normal := "create table a like b"
+	testCases := []struct {
+		input  string
+		output string
+	}{
+		{
+			"create table a like b",
+			normal,
+		},
+		{
+			"create table a (like b)",
+			normal,
+		},
+		{
+			"create table ks.a like unsharded_ks.b",
+			"create table ks.a like unsharded_ks.b",
+		},
 	}
 	for _, tcase := range testCases {
 		tree, err := ParseStrictDDL(tcase.input)
@@ -2002,8 +2194,36 @@ func TestErrors(t *testing.T) {
 // BenchmarkParse1-4         100000             16334 ns/op
 // BenchmarkParse2-4          30000             44121 ns/op
 
+// Benchmark run on 9/3/18, comparing pooled parser performance.
+//
+// benchmark                     old ns/op     new ns/op     delta
+// BenchmarkNormalize-4          2540          2533          -0.28%
+// BenchmarkParse1-4             18269         13330         -27.03%
+// BenchmarkParse2-4             46703         41255         -11.67%
+// BenchmarkParse2Parallel-4     22246         20707         -6.92%
+// BenchmarkParse3-4             4064743       4083135       +0.45%
+//
+// benchmark                     old allocs     new allocs     delta
+// BenchmarkNormalize-4          27             27             +0.00%
+// BenchmarkParse1-4             75             74             -1.33%
+// BenchmarkParse2-4             264            263            -0.38%
+// BenchmarkParse2Parallel-4     176            175            -0.57%
+// BenchmarkParse3-4             360            361            +0.28%
+//
+// benchmark                     old bytes     new bytes     delta
+// BenchmarkNormalize-4          821           821           +0.00%
+// BenchmarkParse1-4             22776         2307          -89.87%
+// BenchmarkParse2-4             28352         7881          -72.20%
+// BenchmarkParse2Parallel-4     25712         5235          -79.64%
+// BenchmarkParse3-4             6352082       6336307       -0.25%
+
+const (
+	sql1 = "select 'abcd', 20, 30.0, eid from a where 1=eid and name='3'"
+	sql2 = "select aaaa, bbb, ccc, ddd, eeee, ffff, gggg, hhhh, iiii from tttt, ttt1, ttt3 where aaaa = bbbb and bbbb = cccc and dddd+1 = eeee group by fff, gggg having hhhh = iiii and iiii = jjjj order by kkkk, llll limit 3, 4"
+)
+
 func BenchmarkParse1(b *testing.B) {
-	sql := "select 'abcd', 20, 30.0, eid from a where 1=eid and name='3'"
+	sql := sql1
 	for i := 0; i < b.N; i++ {
 		ast, err := Parse(sql)
 		if err != nil {
@@ -2014,7 +2234,7 @@ func BenchmarkParse1(b *testing.B) {
 }
 
 func BenchmarkParse2(b *testing.B) {
-	sql := "select aaaa, bbb, ccc, ddd, eeee, ffff, gggg, hhhh, iiii from tttt, ttt1, ttt3 where aaaa = bbbb and bbbb = cccc and dddd+1 = eeee group by fff, gggg having hhhh = iiii and iiii = jjjj order by kkkk, llll limit 3, 4"
+	sql := sql2
 	for i := 0; i < b.N; i++ {
 		ast, err := Parse(sql)
 		if err != nil {
@@ -2022,6 +2242,19 @@ func BenchmarkParse2(b *testing.B) {
 		}
 		_ = String(ast)
 	}
+}
+
+func BenchmarkParse2Parallel(b *testing.B) {
+	sql := sql2
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			ast, err := Parse(sql)
+			if err != nil {
+				b.Fatal(err)
+			}
+			_ = ast
+		}
+	})
 }
 
 var benchQuery string

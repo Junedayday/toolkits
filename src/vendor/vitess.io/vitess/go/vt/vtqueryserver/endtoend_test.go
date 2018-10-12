@@ -105,10 +105,8 @@ func TestMain(m *testing.M) {
 		defer func() { tabletenv.Config = tabletenv.DefaultQsConfig }()
 
 		// Initialize the query service on top of the vttest MySQL database.
-		dbcfgs := dbconfigs.DBConfigs{
-			App: mysqlConnParams,
-		}
-		queryServer, err = initProxy(&dbcfgs)
+		dbcfgs := dbconfigs.NewTestDBConfigs(mysqlConnParams, mysqlConnParams, cluster.DbName())
+		queryServer, err = initProxy(dbcfgs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "could not start proxy: %v\n", err)
 			return 1
@@ -483,7 +481,7 @@ func TestQueryDeadline(t *testing.T) {
 		t.Errorf("Unexpected error code: %d, want %d", got, want)
 	}
 
-	_, err = conn.ReadQueryResult(1000, false)
+	_, _, err = conn.ReadQueryResult(1000, false)
 	if err != nil {
 		t.Errorf("unexpected error %v", err)
 	}

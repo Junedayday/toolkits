@@ -62,6 +62,7 @@ import (
 	"vitess.io/vitess/go/vt/topo"
 	"vitess.io/vitess/go/vt/topo/topoproto"
 	"vitess.io/vitess/go/vt/topotools"
+	"vitess.io/vitess/go/vt/vttablet/tabletmanager/vreplication"
 	"vitess.io/vitess/go/vt/vttablet/tabletserver"
 	"vitess.io/vitess/go/vt/vttablet/tabletservermock"
 
@@ -87,9 +88,10 @@ type ActionAgent struct {
 	HealthReporter      health.Reporter
 	TopoServer          *topo.Server
 	TabletAlias         *topodatapb.TabletAlias
+	Cnf                 *mysqlctl.Mycnf
 	MysqlDaemon         mysqlctl.MysqlDaemon
-	DBConfigs           dbconfigs.DBConfigs
-	BinlogPlayerMap     *BinlogPlayerMap
+	DBConfigs           *dbconfigs.DBConfigs
+	VREngine            *vreplication.Engine
 
 	// exportStats is set only for production tablet.
 	exportStats bool
@@ -97,6 +99,12 @@ type ActionAgent struct {
 	// statsTabletType is set to expose the current tablet type,
 	// only used if exportStats is true.
 	statsTabletType *stats.String
+
+	// statsTabletTypeCount exposes the current tablet type as a label,
+	// with the value counting the occurances of the respective tablet type.
+	// Useful for Prometheus which doesn't support exporting strings as stat values
+	// only used if exportStats is true.
+	statsTabletTypeCount *stats.CountersWithSingleLabel
 
 	// batchCtx is given to the agent by its creator, and should be used for
 	// any background tasks spawned by the agent.
@@ -207,7 +215,7 @@ func NewActionAgent(
 	mysqld mysqlctl.MysqlDaemon,
 	queryServiceControl tabletserver.Controller,
 	tabletAlias *topodatapb.TabletAlias,
-	dbcfgs dbconfigs.DBConfigs,
+	dbcfgs *dbconfigs.DBConfigs,
 	mycnf *mysqlctl.Mycnf,
 	port, gRPCPort int32,
 ) (agent *ActionAgent, err error) {
@@ -222,12 +230,18 @@ func NewActionAgent(
 		batchCtx:            batchCtx,
 		TopoServer:          ts,
 		TabletAlias:         tabletAlias,
+		Cnf:                 mycnf,
 		MysqlDaemon:         mysqld,
 		DBConfigs:           dbcfgs,
 		History:             history.New(historyLength),
 		_healthy:            fmt.Errorf("healthcheck not run yet"),
 		orc:                 orc,
 	}
+	// Sanity check for inconsistent flags
+	if agent.Cnf == nil && *restoreFromBackup {
+		return nil, fmt.Errorf("you cannot enable -restore_from_backup without a my.cnf file")
+	}
+
 	agent.registerQueryRuleSources()
 
 	// try to initialize the tablet if we have to
@@ -238,31 +252,26 @@ func NewActionAgent(
 	// Create the TabletType stats
 	agent.exportStats = true
 	agent.statsTabletType = stats.NewString("TabletType")
+	agent.statsTabletTypeCount = stats.NewCountersWithSingleLabel("TabletTypeCount", "Number of times the tablet changed to the labeled type", "type")
 
-	// Start the binlog player services, not playing at start.
-	agent.BinlogPlayerMap = NewBinlogPlayerMap(ts, mysqld, func() binlogplayer.VtClient {
-		return binlogplayer.NewDbClient(&agent.DBConfigs.Filtered)
+	// The db name will get set by the Start function called below, before
+	// VREngine gets to invoke the FilteredWithDB call.
+	agent.VREngine = vreplication.NewEngine(ts, tabletAlias.Cell, mysqld, func() binlogplayer.DBClient {
+		return binlogplayer.NewDBClient(agent.DBConfigs.FilteredWithDB())
 	})
-	// Stop all binlog players upon entering lameduck.
-	servenv.OnTerm(agent.BinlogPlayerMap.StopAllPlayersAndReset)
-	RegisterBinlogPlayerMap(agent.BinlogPlayerMap)
+	servenv.OnTerm(agent.VREngine.Close)
 
 	var mysqlHost string
 	var mysqlPort int32
-	if dbcfgs.App.Host != "" {
-		mysqlHost = dbcfgs.App.Host
-		mysqlPort = int32(dbcfgs.App.Port)
+	if appConfig := dbcfgs.AppWithDB(); appConfig.Host != "" {
+		mysqlHost = appConfig.Host
+		mysqlPort = int32(appConfig.Port)
 	} else {
-		// Assume unix socket was specified and try to figure out the mysql port
-		// by other means.
-		mysqlPort = mycnf.MysqlPort
-		if mysqlPort == 0 {
-			// we don't know the port, try to get it from mysqld
-			var err error
-			mysqlPort, err = mysqld.GetMysqlPort()
-			if err != nil {
-				log.Warningf("Cannot get current mysql port, will use 0 for now: %v", err)
-			}
+		// Assume unix socket was specified and try to get the port from mysqld
+		var err error
+		mysqlPort, err = mysqld.GetMysqlPort()
+		if err != nil {
+			log.Warningf("Cannot get current mysql port, will try to get it later: %v", err)
 		}
 	}
 
@@ -329,9 +338,10 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 		batchCtx:            batchCtx,
 		TopoServer:          ts,
 		TabletAlias:         tabletAlias,
+		Cnf:                 nil,
 		MysqlDaemon:         mysqlDaemon,
-		DBConfigs:           dbconfigs.DBConfigs{},
-		BinlogPlayerMap:     nil,
+		DBConfigs:           &dbconfigs.DBConfigs{},
+		VREngine:            vreplication.NewEngine(ts, tabletAlias.Cell, mysqlDaemon, binlogplayer.NewFakeDBClient),
 		History:             history.New(historyLength),
 		_healthy:            fmt.Errorf("healthcheck not run yet"),
 	}
@@ -359,7 +369,7 @@ func NewTestActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *
 // NewComboActionAgent creates an agent tailored specifically to run
 // within the vtcombo binary. It cannot be called concurrently,
 // as it changes the flags.
-func NewComboActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *topodatapb.TabletAlias, vtPort, grpcPort int32, queryServiceControl tabletserver.Controller, dbcfgs dbconfigs.DBConfigs, mysqlDaemon mysqlctl.MysqlDaemon, keyspace, shard, dbname, tabletType string) *ActionAgent {
+func NewComboActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias *topodatapb.TabletAlias, vtPort, grpcPort int32, queryServiceControl tabletserver.Controller, dbcfgs *dbconfigs.DBConfigs, mysqlDaemon mysqlctl.MysqlDaemon, keyspace, shard, dbname, tabletType string) *ActionAgent {
 	agent := &ActionAgent{
 		QueryServiceControl: queryServiceControl,
 		UpdateStream:        binlog.NewUpdateStreamControlMock(),
@@ -367,9 +377,10 @@ func NewComboActionAgent(batchCtx context.Context, ts *topo.Server, tabletAlias 
 		batchCtx:            batchCtx,
 		TopoServer:          ts,
 		TabletAlias:         tabletAlias,
+		Cnf:                 nil,
 		MysqlDaemon:         mysqlDaemon,
 		DBConfigs:           dbcfgs,
-		BinlogPlayerMap:     nil,
+		VREngine:            vreplication.NewEngine(nil, "", nil, nil),
 		gotMysqlPort:        true,
 		History:             history.New(historyLength),
 		_healthy:            fmt.Errorf("healthcheck not run yet"),
@@ -470,9 +481,14 @@ func (agent *ActionAgent) slaveStopped() bool {
 		return *agent._slaveStopped
 	}
 
+	// If there's no Cnf file, don't read state.
+	if agent.Cnf == nil {
+		return false
+	}
+
 	// If the marker file exists, we're stopped.
 	// Treat any read error as if the file doesn't exist.
-	_, err := os.Stat(path.Join(agent.MysqlDaemon.TabletDir(), slaveStoppedFile))
+	_, err := os.Stat(path.Join(agent.Cnf.TabletDir(), slaveStoppedFile))
 	slaveStopped := err == nil
 	agent._slaveStopped = &slaveStopped
 	return slaveStopped
@@ -488,7 +504,10 @@ func (agent *ActionAgent) setSlaveStopped(slaveStopped bool) {
 	// We store a marker in the filesystem so it works regardless of whether
 	// mysqld is running, and so it's tied to this particular instance of the
 	// tablet data dir (the one that's paused at a known replication position).
-	tabletDir := agent.MysqlDaemon.TabletDir()
+	if agent.Cnf == nil {
+		return
+	}
+	tabletDir := agent.Cnf.TabletDir()
 	if tabletDir == "" {
 		return
 	}
@@ -581,23 +600,14 @@ func (agent *ActionAgent) Start(ctx context.Context, mysqlHost string, mysqlPort
 	// Get and fix the dbname if necessary, only for real instances.
 	if !agent.DBConfigs.IsZero() {
 		dbname := topoproto.TabletDbName(agent.initialTablet)
-
-		// Update our DB config to match the info we have in the tablet
-		if agent.DBConfigs.App.DbName == "" {
-			agent.DBConfigs.App.DbName = dbname
-		}
-		if agent.DBConfigs.Filtered.DbName == "" {
-			agent.DBConfigs.Filtered.DbName = dbname
-		}
+		agent.DBConfigs.DBName.Set(dbname)
 	}
 
 	// Create and register the RPC services from UpdateStream.
 	// (it needs the dbname, so it has to be delayed up to here,
 	// but it has to be before updateState below that may use it)
 	if initUpdateStream {
-		cp := agent.DBConfigs.Dba
-		cp.DbName = agent.DBConfigs.App.DbName
-		us := binlog.NewUpdateStream(agent.TopoServer, agent.initialTablet.Keyspace, agent.TabletAlias.Cell, &cp, agent.QueryServiceControl.SchemaEngine())
+		us := binlog.NewUpdateStream(agent.TopoServer, agent.initialTablet.Keyspace, agent.TabletAlias.Cell, agent.DBConfigs.DbaWithDB(), agent.QueryServiceControl.SchemaEngine())
 		agent.UpdateStream = us
 		servenv.OnRun(func() {
 			us.RegisterService()
@@ -627,6 +637,7 @@ func (agent *ActionAgent) Start(ctx context.Context, mysqlHost string, mysqlPort
 		statsShard := stats.NewString("TabletShard")
 		statsKeyRangeStart := stats.NewString("TabletKeyRangeStart")
 		statsKeyRangeEnd := stats.NewString("TabletKeyRangeEnd")
+		statsAlias := stats.NewString("TabletAlias")
 
 		statsKeyspace.Set(agent.initialTablet.Keyspace)
 		statsShard.Set(agent.initialTablet.Shard)
@@ -634,6 +645,7 @@ func (agent *ActionAgent) Start(ctx context.Context, mysqlHost string, mysqlPort
 			statsKeyRangeStart.Set(hex.EncodeToString(agent.initialTablet.KeyRange.Start))
 			statsKeyRangeEnd.Set(hex.EncodeToString(agent.initialTablet.KeyRange.End))
 		}
+		statsAlias.Set(topoproto.TabletAliasString(agent.initialTablet.Alias))
 	}
 
 	// Initialize the current tablet to match our current running
@@ -674,9 +686,7 @@ func (agent *ActionAgent) Stop() {
 	if agent.UpdateStream != nil {
 		agent.UpdateStream.Disable()
 	}
-	if agent.BinlogPlayerMap != nil {
-		agent.BinlogPlayerMap.StopAllPlayersAndReset()
-	}
+	agent.VREngine.Close()
 	if agent.MysqlDaemon != nil {
 		agent.MysqlDaemon.Close()
 	}

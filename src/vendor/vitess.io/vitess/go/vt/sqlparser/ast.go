@@ -20,9 +20,11 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 
 	"vitess.io/vitess/go/sqltypes"
 	"vitess.io/vitess/go/vt/log"
@@ -31,6 +33,41 @@ import (
 	querypb "vitess.io/vitess/go/vt/proto/query"
 	vtrpcpb "vitess.io/vitess/go/vt/proto/vtrpc"
 )
+
+// parserPool is a pool for parser objects.
+var parserPool = sync.Pool{}
+
+// zeroParser is a zero-initialized parser to help reinitialize the parser for pooling.
+var zeroParser = *(yyNewParser().(*yyParserImpl))
+
+// yyParsePooled is a wrapper around yyParse that pools the parser objects. There isn't a
+// particularly good reason to use yyParse directly, since it immediately discards its parser.  What
+// would be ideal down the line is to actually pool the stacks themselves rather than the parser
+// objects, as per https://github.com/cznic/goyacc/blob/master/main.go. However, absent an upstream
+// change to goyacc, this is the next best option.
+//
+// N.B: Parser pooling means that you CANNOT take references directly to parse stack variables (e.g.
+// $$ = &$4) in sql.y rules. You must instead add an intermediate reference like so:
+//    showCollationFilterOpt := $4
+//    $$ = &Show{Type: string($2), ShowCollationFilterOpt: &showCollationFilterOpt}
+func yyParsePooled(yylex yyLexer) int {
+	// Being very particular about using the base type and not an interface type b/c we depend on
+	// the implementation to know how to reinitialize the parser.
+	var parser *yyParserImpl
+
+	i := parserPool.Get()
+	if i != nil {
+		parser = i.(*yyParserImpl)
+	} else {
+		parser = yyNewParser().(*yyParserImpl)
+	}
+
+	defer func() {
+		*parser = zeroParser
+		parserPool.Put(parser)
+	}()
+	return parser.Parse(yylex)
+}
 
 // Instructions for creating new types: If a type
 // needs to satisfy an interface, declare that function
@@ -50,13 +87,16 @@ import (
 // error is ignored and the DDL is returned anyway.
 func Parse(sql string) (Statement, error) {
 	tokenizer := NewStringTokenizer(sql)
-	if yyParse(tokenizer) != 0 {
+	if yyParsePooled(tokenizer) != 0 {
 		if tokenizer.partialDDL != nil {
 			log.Warningf("ignoring error parsing DDL '%s': %v", sql, tokenizer.LastError)
 			tokenizer.ParseTree = tokenizer.partialDDL
 			return tokenizer.ParseTree, nil
 		}
 		return nil, vterrors.New(vtrpcpb.Code_INVALID_ARGUMENT, tokenizer.LastError.Error())
+	}
+	if tokenizer.ParseTree == nil {
+		return nil, ErrEmpty
 	}
 	return tokenizer.ParseTree, nil
 }
@@ -65,8 +105,11 @@ func Parse(sql string) (Statement, error) {
 // partially parsed DDL statements.
 func ParseStrictDDL(sql string) (Statement, error) {
 	tokenizer := NewStringTokenizer(sql)
-	if yyParse(tokenizer) != 0 {
+	if yyParsePooled(tokenizer) != 0 {
 		return nil, tokenizer.LastError
+	}
+	if tokenizer.ParseTree == nil {
+		return nil, ErrEmpty
 	}
 	return tokenizer.ParseTree, nil
 }
@@ -77,6 +120,16 @@ func ParseStrictDDL(sql string) (Statement, error) {
 // the next call to ParseNext to parse any subsequent SQL statements. When
 // there are no more statements to parse, a error of io.EOF is returned.
 func ParseNext(tokenizer *Tokenizer) (Statement, error) {
+	return parseNext(tokenizer, false)
+}
+
+// ParseNextStrictDDL is the same as ParseNext except it errors on
+// partially parsed DDL statements.
+func ParseNextStrictDDL(tokenizer *Tokenizer) (Statement, error) {
+	return parseNext(tokenizer, true)
+}
+
+func parseNext(tokenizer *Tokenizer, strict bool) (Statement, error) {
 	if tokenizer.lastChar == ';' {
 		tokenizer.next()
 		tokenizer.skipBlank()
@@ -87,15 +140,21 @@ func ParseNext(tokenizer *Tokenizer) (Statement, error) {
 
 	tokenizer.reset()
 	tokenizer.multi = true
-	if yyParse(tokenizer) != 0 {
-		if tokenizer.partialDDL != nil {
+	if yyParsePooled(tokenizer) != 0 {
+		if tokenizer.partialDDL != nil && !strict {
 			tokenizer.ParseTree = tokenizer.partialDDL
 			return tokenizer.ParseTree, nil
 		}
 		return nil, tokenizer.LastError
 	}
+	if tokenizer.ParseTree == nil {
+		return ParseNext(tokenizer)
+	}
 	return tokenizer.ParseTree, nil
 }
+
+// ErrEmpty is a sentinel error returned when parsing empty statements.
+var ErrEmpty = errors.New("empty statement")
 
 // SplitStatement returns the first sql statement up to either a ; or EOF
 // and the remainder from the given buffer
@@ -596,8 +655,9 @@ type Set struct {
 
 // Set.Scope or Show.Scope
 const (
-	SessionStr = "session"
-	GlobalStr  = "global"
+	SessionStr  = "session"
+	GlobalStr   = "global"
+	ImplicitStr = ""
 )
 
 // Format formats the node.
@@ -659,6 +719,7 @@ type DDL struct {
 	NewName       TableName
 	IfExists      bool
 	TableSpec     *TableSpec
+	OptLike       *OptLike
 	PartitionSpec *PartitionSpec
 	VindexSpec    *VindexSpec
 	VindexCols    []ColIdent
@@ -683,10 +744,12 @@ const (
 func (node *DDL) Format(buf *TrackedBuffer) {
 	switch node.Action {
 	case CreateStr:
-		if node.TableSpec == nil {
-			buf.Myprintf("%s table %v", node.Action, node.NewName)
-		} else {
+		if node.OptLike != nil {
+			buf.Myprintf("%s table %v %v", node.Action, node.NewName, node.OptLike)
+		} else if node.TableSpec != nil {
 			buf.Myprintf("%s table %v %v", node.Action, node.NewName, node.TableSpec)
+		} else {
+			buf.Myprintf("%s table %v", node.Action, node.NewName)
 		}
 	case DropStr:
 		exists := ""
@@ -739,6 +802,23 @@ func (node *DDL) walkSubtree(visit Visit) error {
 const (
 	ReorganizeStr = "reorganize partition"
 )
+
+// OptLike works for create table xxx like xxx
+type OptLike struct {
+	LikeTable TableName
+}
+
+// Format formats the node.
+func (node *OptLike) Format(buf *TrackedBuffer) {
+	buf.Myprintf("like %v", node.LikeTable)
+}
+
+func (node *OptLike) walkSubtree(visit Visit) error {
+	if node == nil {
+		return nil
+	}
+	return Walk(visit, node.LikeTable)
+}
 
 // PartitionSpec describe partition actions (for alter and create)
 type PartitionSpec struct {
@@ -807,9 +887,10 @@ func (node *PartitionDefinition) walkSubtree(visit Visit) error {
 
 // TableSpec describes the structure of a table from a CREATE TABLE statement
 type TableSpec struct {
-	Columns []*ColumnDefinition
-	Indexes []*IndexDefinition
-	Options string
+	Columns     []*ColumnDefinition
+	Indexes     []*IndexDefinition
+	Constraints []*ConstraintDefinition
+	Options     string
 }
 
 // Format formats the node.
@@ -825,6 +906,9 @@ func (ts *TableSpec) Format(buf *TrackedBuffer) {
 	for _, idx := range ts.Indexes {
 		buf.Myprintf(",\n\t%v", idx)
 	}
+	for _, c := range ts.Constraints {
+		buf.Myprintf(",\n\t%v", c)
+	}
 
 	buf.Myprintf("\n)%s", strings.Replace(ts.Options, ", ", ",\n  ", -1))
 }
@@ -839,6 +923,11 @@ func (ts *TableSpec) AddIndex(id *IndexDefinition) {
 	ts.Indexes = append(ts.Indexes, id)
 }
 
+// AddConstraint appends the given index to the list in the spec
+func (ts *TableSpec) AddConstraint(cd *ConstraintDefinition) {
+	ts.Constraints = append(ts.Constraints, cd)
+}
+
 func (ts *TableSpec) walkSubtree(visit Visit) error {
 	if ts == nil {
 		return nil
@@ -851,6 +940,12 @@ func (ts *TableSpec) walkSubtree(visit Visit) error {
 	}
 
 	for _, n := range ts.Indexes {
+		if err := Walk(visit, n); err != nil {
+			return err
+		}
+	}
+
+	for _, n := range ts.Constraints {
 		if err := Walk(visit, n); err != nil {
 			return err
 		}
@@ -1161,7 +1256,10 @@ func (ii *IndexInfo) Format(buf *TrackedBuffer) {
 	if ii.Primary {
 		buf.Myprintf("%s", ii.Type)
 	} else {
-		buf.Myprintf("%s %v", ii.Type, ii.Name)
+		buf.Myprintf("%s", ii.Type)
+		if !ii.Name.IsEmpty() {
+			buf.Myprintf(" %v", ii.Name)
+		}
 	}
 }
 
@@ -1278,15 +1376,121 @@ func (node VindexParam) walkSubtree(visit Visit) error {
 	)
 }
 
+// ConstraintDefinition describes a constraint in a CREATE TABLE statement
+type ConstraintDefinition struct {
+	Name    string
+	Details ConstraintInfo
+}
+
+// ConstraintInfo details a constraint in a CREATE TABLE statement
+type ConstraintInfo interface {
+	SQLNode
+	constraintInfo()
+}
+
+// Format formats the node.
+func (c *ConstraintDefinition) Format(buf *TrackedBuffer) {
+	if c.Name != "" {
+		buf.Myprintf("constraint %s ", c.Name)
+	}
+	c.Details.Format(buf)
+}
+
+func (c *ConstraintDefinition) walkSubtree(visit Visit) error {
+	return Walk(visit, c.Details)
+}
+
+// ReferenceAction indicates the action takes by a referential constraint e.g.
+// the `CASCADE` in a `FOREIGN KEY .. ON DELETE CASCADE` table definition.
+type ReferenceAction int
+
+// These map to the SQL-defined reference actions.
+// See https://dev.mysql.com/doc/refman/8.0/en/create-table-foreign-keys.html#foreign-keys-referential-actions
+const (
+	// DefaultAction indicates no action was explicitly specified.
+	DefaultAction ReferenceAction = iota
+	Restrict
+	Cascade
+	NoAction
+	SetNull
+	SetDefault
+)
+
+func (a ReferenceAction) walkSubtree(visit Visit) error { return nil }
+
+// Format formats the node.
+func (a ReferenceAction) Format(buf *TrackedBuffer) {
+	switch a {
+	case Restrict:
+		buf.WriteString("restrict")
+	case Cascade:
+		buf.WriteString("cascade")
+	case NoAction:
+		buf.WriteString("no action")
+	case SetNull:
+		buf.WriteString("set null")
+	case SetDefault:
+		buf.WriteString("set default")
+	}
+}
+
+// ForeignKeyDefinition describes a foreign key in a CREATE TABLE statement
+type ForeignKeyDefinition struct {
+	Source            Columns
+	ReferencedTable   TableName
+	ReferencedColumns Columns
+	OnDelete          ReferenceAction
+	OnUpdate          ReferenceAction
+}
+
+var _ ConstraintInfo = &ForeignKeyDefinition{}
+
+// Format formats the node.
+func (f *ForeignKeyDefinition) Format(buf *TrackedBuffer) {
+	buf.Myprintf("foreign key %v references %v %v", f.Source, f.ReferencedTable, f.ReferencedColumns)
+	if f.OnDelete != DefaultAction {
+		buf.Myprintf(" on delete %v", f.OnDelete)
+	}
+	if f.OnUpdate != DefaultAction {
+		buf.Myprintf(" on update %v", f.OnUpdate)
+	}
+}
+
+func (f *ForeignKeyDefinition) constraintInfo() {}
+
+func (f *ForeignKeyDefinition) walkSubtree(visit Visit) error {
+	if err := Walk(visit, f.Source); err != nil {
+		return err
+	}
+	if err := Walk(visit, f.ReferencedTable); err != nil {
+		return err
+	}
+	return Walk(visit, f.ReferencedColumns)
+}
+
 // Show represents a show statement.
 type Show struct {
-	Type    string
-	OnTable TableName
-	Scope   string
+	Type                   string
+	OnTable                TableName
+	ShowTablesOpt          *ShowTablesOpt
+	Scope                  string
+	ShowCollationFilterOpt *Expr
 }
 
 // Format formats the node.
 func (node *Show) Format(buf *TrackedBuffer) {
+	if (node.Type == "tables" || node.Type == "columns") && node.ShowTablesOpt != nil {
+		opt := node.ShowTablesOpt
+		buf.Myprintf("show %s%s", opt.Full, node.Type)
+		if node.Type == "columns" && node.HasOnTable() {
+			buf.Myprintf(" from %v", node.OnTable)
+		}
+		if opt.DbName != "" {
+			buf.Myprintf(" from %s", opt.DbName)
+		}
+		buf.Myprintf("%v", opt.Filter)
+		return
+	}
 	if node.Scope == "" {
 		buf.Myprintf("show %s", node.Type)
 	} else {
@@ -1294,6 +1498,9 @@ func (node *Show) Format(buf *TrackedBuffer) {
 	}
 	if node.HasOnTable() {
 		buf.Myprintf(" on %v", node.OnTable)
+	}
+	if node.Type == "collation" && node.ShowCollationFilterOpt != nil {
+		buf.Myprintf(" where %v", *node.ShowCollationFilterOpt)
 	}
 }
 
@@ -1303,6 +1510,35 @@ func (node *Show) HasOnTable() bool {
 }
 
 func (node *Show) walkSubtree(visit Visit) error {
+	return nil
+}
+
+// ShowTablesOpt is show tables option
+type ShowTablesOpt struct {
+	Full   string
+	DbName string
+	Filter *ShowFilter
+}
+
+// ShowFilter is show tables filter
+type ShowFilter struct {
+	Like   string
+	Filter Expr
+}
+
+// Format formats the node.
+func (node *ShowFilter) Format(buf *TrackedBuffer) {
+	if node == nil {
+		return
+	}
+	if node.Like != "" {
+		buf.Myprintf(" like '%s'", node.Like)
+	} else {
+		buf.Myprintf(" where %v", node.Filter)
+	}
+}
+
+func (node *ShowFilter) walkSubtree(visit Visit) error {
 	return nil
 }
 
@@ -2509,6 +2745,7 @@ const (
 	BangStr    = "!"
 	BinaryStr  = "binary "
 	UBinaryStr = "_binary "
+	Utf8mb4Str = "_utf8mb4 "
 )
 
 // Format formats the node.
@@ -3174,11 +3411,28 @@ type SetExpr struct {
 	Expr Expr
 }
 
+// SetExpr.Expr, for SET TRANSACTION ... or START TRANSACTION
+const (
+	// TransactionStr is the Name for a SET TRANSACTION statement
+	TransactionStr = "transaction"
+
+	IsolationLevelReadUncommitted = "isolation level read uncommitted"
+	IsolationLevelReadCommitted   = "isolation level read committed"
+	IsolationLevelRepeatableRead  = "isolation level repeatable read"
+	IsolationLevelSerializable    = "isolation level serializable"
+
+	TxReadOnly  = "read only"
+	TxReadWrite = "read write"
+)
+
 // Format formats the node.
 func (node *SetExpr) Format(buf *TrackedBuffer) {
 	// We don't have to backtick set variable names.
 	if node.Name.EqualString("charset") || node.Name.EqualString("names") {
 		buf.Myprintf("%s %v", node.Name.String(), node.Expr)
+	} else if node.Name.EqualString(TransactionStr) {
+		sqlVal := node.Expr.(*SQLVal)
+		buf.Myprintf("%s %s", node.Name.String(), strings.ToLower(string(sqlVal.Val)))
 	} else {
 		buf.Myprintf("%s = %v", node.Name.String(), node.Expr)
 	}
@@ -3350,8 +3604,13 @@ func (node *TableIdent) UnmarshalJSON(b []byte) error {
 }
 
 func formatID(buf *TrackedBuffer, original, lowered string) {
+	isDbSystemVariable := false
+	if len(original) > 1 && original[:2] == "@@" {
+		isDbSystemVariable = true
+	}
+
 	for i, c := range original {
-		if !isLetter(uint16(c)) {
+		if !isLetter(uint16(c)) && (!isDbSystemVariable || !isCarat(uint16(c))) {
 			if i == 0 || !isDigit(uint16(c)) {
 				goto mustEscape
 			}

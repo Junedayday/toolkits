@@ -30,6 +30,7 @@ import (
 	"vitess.io/vitess/go/vt/vtctl"
 	"vitess.io/vitess/go/vt/workflow"
 	"vitess.io/vitess/go/vt/workflow/resharding"
+	"vitess.io/vitess/go/vt/workflow/reshardingworkflowgen"
 	"vitess.io/vitess/go/vt/workflow/topovalidator"
 )
 
@@ -58,6 +59,9 @@ func initWorkflowManager(ts *topo.Server) {
 
 		// Register the Horizontal Resharding workflow.
 		resharding.Register()
+
+		// Register workflow that generates Horizontal Resharding workflows.
+		reshardingworkflowgen.Register()
 
 		// Unregister the blacklisted workflows.
 		for _, name := range workflowManagerDisable {
@@ -118,10 +122,10 @@ func runWorkflowManagerElection(ts *topo.Server) {
 		go func() {
 			for {
 				ctx, err := mp.WaitForMastership()
-				switch err {
-				case nil:
+				switch {
+				case err == nil:
 					vtctl.WorkflowManager.Run(ctx)
-				case topo.ErrInterrupted:
+				case topo.IsErrType(err, topo.Interrupted):
 					return
 				default:
 					log.Errorf("Got error while waiting for master, will retry in 5s: %v", err)

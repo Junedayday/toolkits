@@ -208,12 +208,23 @@ func (mt *MultiTimings) Labels() []string {
 	return mt.labels
 }
 
+// safeJoinLabels joins the label values with ".", but first replaces any existing
+// "." characters in the labels with the proper replacement, to avoid issues parsing
+// them apart later.
+func safeJoinLabels(labels []string) string {
+	sanitizedLabels := make([]string, len(labels))
+	for idx, label := range labels {
+		sanitizedLabels[idx] = safeLabel(label)
+	}
+	return strings.Join(sanitizedLabels, ".")
+}
+
 // Add will add a new value to the named histogram.
 func (mt *MultiTimings) Add(names []string, elapsed time.Duration) {
 	if len(names) != len(mt.labels) {
 		panic("MultiTimings: wrong number of values in Add")
 	}
-	mt.Timings.Add(strings.Join(names, "."), elapsed)
+	mt.Timings.Add(safeJoinLabels(names), elapsed)
 }
 
 // Record is a convenience function that records completion
@@ -222,7 +233,7 @@ func (mt *MultiTimings) Record(names []string, startTime time.Time) {
 	if len(names) != len(mt.labels) {
 		panic("MultiTimings: wrong number of values in Record")
 	}
-	mt.Timings.Record(strings.Join(names, "."), startTime)
+	mt.Timings.Record(safeJoinLabels(names), startTime)
 }
 
 // Cutoffs returns the cutoffs used in the component histograms.
