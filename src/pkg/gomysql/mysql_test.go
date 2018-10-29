@@ -174,3 +174,29 @@ func TestMysqlGetBinLogProtoFromPos(t *testing.T) {
 	go sc.StartBinlogDumpFromPositionAsProto(f)
 	time.Sleep(time.Second)
 }
+
+func TestMysqlPosEncodeAndDecode(t *testing.T) {
+	cfg, err := testNewConnCfg()
+	if err != nil {
+		t.Errorf("new config error %v", err)
+		return
+	}
+	sc, err := cfg.NewSlaveConner()
+	if err != nil {
+		t.Errorf("new slave connection error %v", err)
+		return
+	}
+	defer sc.Close()
+
+	err = sc.SetMasterPosition()
+	if err != nil {
+		t.Errorf("set position error %v", err)
+		return
+	}
+	b := sc.EncodePosition()
+	err = sc.DecodePosition(b)
+	if err != nil {
+		t.Errorf("DecodePosition position error %v", err)
+		return
+	}
+}

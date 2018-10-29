@@ -60,24 +60,23 @@ func newSlaveConn(cfg *connCfg) (sc *slaveConn, err error) {
 	return
 }
 
-func (sc *slaveConn) StartBinlogDumpFromCurrentAsProto(dealFunc func(*pbmysql.Event)) (err error) {
-	ctx := context.Background()
+func (sc *slaveConn) StartBinlogDumpFromCurrentAsProto(dealFunc func(*pbmysql.Event), reloadCh chan struct{}) (err error) {
+	ctx, cancel := context.WithCancel(context.Background())
 	var eventCh <-chan vtmysql.BinlogEvent
 	var pos vtmysql.Position
 	pos, eventCh, err = sc.conn.StartBinlogDumpFromCurrent(ctx)
 	// save position
 	sc.savePosition(pos)
 	if err != nil {
-		err = fmt.Errorf("StartBinlogDumpFromBinlogBeforeTimestamp %v", err)
-		return
+		glog.Fatalf("StartBinlogDumpFromBinlogBeforeTimestamp %v", err)
 	}
 	go sc.startProtoParsing(ctx, eventCh)
-
-	return sc.dealProtoMsg(dealFunc)
+	defer cancel()
+	return sc.dealProtoMsg(dealFunc, reloadCh)
 }
 
-func (sc *slaveConn) StartBinlogDumpFromPositionAsProto(dealFunc func(*pbmysql.Event)) (err error) {
-	ctx := context.Background()
+func (sc *slaveConn) StartBinlogDumpFromPositionAsProto(dealFunc func(*pbmysql.Event), reloadCh chan struct{}) (err error) {
+	ctx, cancel := context.WithCancel(context.Background())
 	var eventCh <-chan vtmysql.BinlogEvent
 	eventCh, err = sc.conn.StartBinlogDumpFromPosition(ctx, sc.pos)
 	if err != nil {
@@ -85,8 +84,8 @@ func (sc *slaveConn) StartBinlogDumpFromPositionAsProto(dealFunc func(*pbmysql.E
 		return
 	}
 	go sc.startProtoParsing(ctx, eventCh)
-
-	return sc.dealProtoMsg(dealFunc)
+	defer cancel()
+	return sc.dealProtoMsg(dealFunc, reloadCh)
 }
 
 func (sc *slaveConn) StartBinlogDumpFromCurrentAsStat(dealFunc func(binlog.FullBinlogStatement)) (err error) {
@@ -118,9 +117,13 @@ func (sc *slaveConn) StartBinlogDumpFromPositionAsStat(dealFunc func(binlog.Full
 	return sc.dealStatsMsg(dealFunc)
 }
 
-func (sc *slaveConn) SetMasterPosition() (err error) {
-	sc.pos, err = sc.conn.Conn.MasterPosition()
-	fmt.Printf("%#v", sc.pos)
+func (sc *slaveConn) EncodePosition() (b []byte) {
+	b = []byte(vtmysql.EncodePosition(sc.pos))
+	return
+}
+
+func (sc *slaveConn) DecodePosition(b []byte) (err error) {
+	sc.pos, err = vtmysql.DecodePosition(string(b))
 	return
 }
 
@@ -130,7 +133,7 @@ func (sc *slaveConn) Close() {
 
 func (sc *slaveConn) startProtoParsing(ctx context.Context, eventCh <-chan vtmysql.BinlogEvent) {
 	// ParseEvents is packed in "vitess.io/vitess/go/vt/binlog"
-	binlog.ParseProtoEvents(ctx, eventCh, sc.schemas, sc.pbMsgCh)
+	binlog.ParseProtoEvents(ctx, eventCh, sc.schemas, sc.pbMsgCh, sc.pos, true)
 }
 
 func (sc *slaveConn) startStatsParsing(ctx context.Context, eventCh <-chan vtmysql.BinlogEvent) {
@@ -138,7 +141,7 @@ func (sc *slaveConn) startStatsParsing(ctx context.Context, eventCh <-chan vtmys
 	binlog.ParseStatsEvents(ctx, eventCh, sc.schemas, sc.statMsgCh)
 }
 
-func (sc *slaveConn) dealProtoMsg(dealFunc func(*pbmysql.Event)) (err error) {
+func (sc *slaveConn) dealProtoMsg(dealFunc func(*pbmysql.Event), reloadCh chan struct{}) (err error) {
 	for {
 		select {
 		case msg, ok := <-sc.pbMsgCh:
@@ -148,6 +151,11 @@ func (sc *slaveConn) dealProtoMsg(dealFunc func(*pbmysql.Event)) (err error) {
 						return errConnClosed
 					}
 					glog.Errorf("parse event error : %v", msg.ErrInfo)
+				} else if msg.Reload {
+					glog.Infof("Find a DDL, going to reload table")
+					reloadCh <- struct{}{}
+					fmt.Println("send reload")
+					return
 				} else {
 					for _, v := range msg.Events {
 						dealFunc(v)
@@ -178,6 +186,11 @@ func (sc *slaveConn) dealStatsMsg(dealFunc func(binlog.FullBinlogStatement)) (er
 			}
 		}
 	}
+}
+
+func (sc *slaveConn) SetMasterPosition() (err error) {
+	sc.pos, err = sc.conn.Conn.MasterPosition()
+	return
 }
 
 func (sc *slaveConn) savePosition(position vtmysql.Position) {

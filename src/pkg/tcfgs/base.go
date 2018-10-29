@@ -23,6 +23,12 @@ func GetTestSSHCfg() (*SSHCfg, error) {
 	return cfgsAll.SSHHost, err
 }
 
+// GetTestKafkaCfg get test kafka config from yaml
+func GetTestKafkaCfg() (*KafkaCfg, error) {
+	err := cfgtool.LoadCfgFromYamlFile(cfgPath, cfgsAll)
+	return cfgsAll.Kafka, err
+}
+
 // MysqlCfg config for a mysql instance
 type MysqlCfg struct {
 	IP       string
@@ -39,7 +45,14 @@ type SSHCfg struct {
 	Password string
 }
 
+// KafkaCfg config for a kafka
+type KafkaCfg struct {
+	IP   string
+	Port int
+}
+
 type baseCfg struct {
 	Mysql   *MysqlCfg `yaml:"mysql"`
 	SSHHost *SSHCfg   `yaml:"sshHost"`
+	Kafka   *KafkaCfg `yaml:"kafka"`
 }

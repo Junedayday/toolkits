@@ -19,10 +19,12 @@ func NewConnCfger(user, password, ip string, port int) ConnCfger {
 
 // SlaveConner implement for slave mysql conn
 type SlaveConner interface {
-	StartBinlogDumpFromCurrentAsProto(dealFunc func(*pbmysql.Event)) (err error)
-	StartBinlogDumpFromPositionAsProto(dealFunc func(*pbmysql.Event)) (err error)
+	StartBinlogDumpFromCurrentAsProto(cdealFunc func(*pbmysql.Event), reloadCh chan struct{}) (err error)
+	StartBinlogDumpFromPositionAsProto(dealFunc func(*pbmysql.Event), reloadCh chan struct{}) (err error)
 	StartBinlogDumpFromCurrentAsStat(dealFunc func(binlog.FullBinlogStatement)) (err error)
 	StartBinlogDumpFromPositionAsStat(dealFunc func(binlog.FullBinlogStatement)) (err error)
+	EncodePosition() (b []byte)
+	DecodePosition(b []byte) (err error)
 	SetMasterPosition() (err error)
 	Close()
 }

@@ -8,3 +8,6 @@ sshHost:
   port: 22
   username: "root"
   password: "123456"
+kafka:
+  ip: "127.0.0.1"
+  port: 9092

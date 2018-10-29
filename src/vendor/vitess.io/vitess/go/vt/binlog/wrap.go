@@ -9,6 +9,7 @@ import (
 	"golang.org/x/net/context"
 	"vitess.io/vitess/go/mysql"
 	binlogdatapb "vitess.io/vitess/go/vt/proto/binlogdata"
+	querypb "vitess.io/vitess/go/vt/proto/query"
 	"vitess.io/vitess/go/vt/sqlparser"
 )
 
@@ -22,6 +23,7 @@ type ParsedStat struct {
 }
 
 // ParseStatsEvents used to parse event detail from binlog
+// onlyPrimaryID if is true, filter records without the primary key named "id"
 func ParseStatsEvents(ctx context.Context, events <-chan mysql.BinlogEvent, seList map[string]*schema.Engine, pbMsgCh chan *ParsedStat) {
 	// statements is for sql statement
 	var statements []FullBinlogStatement
@@ -256,6 +258,22 @@ func ParseStatsEvents(ctx context.Context, events <-chan mysql.BinlogEvent, seLi
 			if tce.ti == nil {
 				err = fmt.Errorf("unknown table %v in schema %v", tm.Name, tm.Database)
 				continue
+			}
+
+			tce.pkNames = make([]*querypb.Field, len(tce.ti.PKColumns))
+			tce.pkIndexes = make([]int, len(tce.ti.Columns))
+			for i := range tce.pkIndexes {
+				// Put -1 as default in here.
+				tce.pkIndexes[i] = -1
+			}
+			for i, c := range tce.ti.PKColumns {
+				// Patch in every PK column index.
+				tce.pkIndexes[c] = i
+				// Fill in pknames
+				tce.pkNames[i] = &querypb.Field{
+					Name: tce.ti.Columns[c].Name.String(),
+					Type: tce.ti.Columns[c].Type,
+				}
 			}
 		case ev.IsWriteRows():
 			tableID := ev.TableID(format)
