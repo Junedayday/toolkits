@@ -1,0 +1,45 @@
+package: .
+ignore:
+- pkg/gomysql
+- proto/mysql/pbmysql
+import:
+- package: github.com/confluentinc/confluent-kafka-go
+  subpackages:
+  - kafka
+- package: github.com/golang/glog
+- package: github.com/golang/protobuf
+  subpackages:
+  - proto
+- package: golang.org/x/crypto
+  repo: git@github.com:golang/crypto
+  vcs: git
+- package: golang.org/x/net
+  repo: git@github.com:golang/net
+  vcs: git
+- package: golang.org/x/text
+  repo: git@github.com:golang/text
+  vcs: git
+- package: golang.org/x/time
+  repo: git@github.com:golang/time
+  vcs: git
+- package: golang.org/x/sys
+  repo: git@github.com:golang/sys
+  vcs: git
+- package: google.golang.org/grpc
+  repo: git@github.com:grpc/grpc-go
+  vcs: git
+- package: google.golang.org/genproto
+  repo: git@github.com:google/go-genproto
+  vcs: git
+- package: vitess.io/vitess
+  repo: git@github.com:Junedayday/vitess
+  vcs: git
+  subpackages:
+  - go/mysql
+  - go/sqltypes
+  - go/vt/binlog
+  - go/vt/dbconfigs
+  - go/vt/vttablet/tabletserver
+  - go/vt/vttablet/tabletserver/connpool
+  - go/vt/vttablet/tabletserver/schema
+  - go/vt/vttablet/tabletserver/tabletenv
