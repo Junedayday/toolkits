@@ -3,10 +3,19 @@ ignore:
 - pkg/gomysql
 - proto/mysql/pbmysql
 import:
+- package: github.com/beorn7/perks
+- package: github.com/prometheus/client_model
+- package: github.com/prometheus/client_golang
+- package: github.com/prometheus/common
+- package: github.com/prometheus/procfs
+- package: github.com/tchap/go-patricia
+- package: github.com/grpc-ecosystem/go-grpc-prometheus
+- package: github.com/matttproud/golang_protobuf_extensions
 - package: github.com/confluentinc/confluent-kafka-go
   subpackages:
   - kafka
 - package: github.com/golang/glog
+- package: github.com/golang/snappy
 - package: github.com/golang/protobuf
   subpackages:
   - proto
@@ -30,6 +39,14 @@ import:
   vcs: git
 - package: google.golang.org/genproto
   repo: git@github.com:google/go-genproto
+  vcs: git
+- package: google.golang.org/appengine
+  repo: git@github.com:golang/appengine
+  vcs: git
+  subpackages:
+  - cloudsql
+- package: cloud.google.com/go
+  repo: git@github.com:GoogleCloudPlatform/google-cloud-go
   vcs: git
 - package: vitess.io/vitess
   repo: git@github.com:Junedayday/vitess

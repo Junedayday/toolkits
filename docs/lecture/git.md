@@ -1,15 +1,18 @@
 # Git
 ---
 Git is a free and open source distributed version control system designed to handle everything from small to very large projects with speed and efficiency.
-
-## Why Git
 - 分布式
 - 分支管理
 
-## From SVN to Git
-- 学习成本高
-- 二进制文件支持性差
+## SVN
+- Client-Server 模型 checkout-commit
+- if server failed？
+
+## Issues for Git
+- 学习成本相对变高
 - 权限控制方式转变
+- 代码泄漏
+- 二进制文件支持性差
 
 ## Install Git Client
 [官方链接](https://git-scm.com/downloads)
@@ -93,3 +96,10 @@ Git is a free and open source distributed version control system designed to han
 - [开发案例](https://nvie.com/posts/a-successful-git-branching-model/)
 
 - [version control](https://stackoverflow.com/questions/47883823/version-controlling-with-mysql-databases)
+
+## Why Git?
+- 开源的趋势
+- 减少对多库的维护
+- 与第三方工具集成(文档,Task,Bug,CI,CD...)
+...
+总而言之，为了提升开发效率，让开发人员有更多的自由时间。
