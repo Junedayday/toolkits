@@ -34,7 +34,6 @@ func (p *producer) ProduceToTopic(topic string, event []byte) (err error) {
 	go func() {
 		defer close(doneChan)
 		err = p.produceEvent()
-		return
 	}()
 
 	p.pd.ProduceChannel() <- &kafka.Message{
@@ -62,6 +61,7 @@ func (p *producer) produceEvent() (err error) {
 		default:
 			err = fmt.Errorf(errIgnoredEvent, e)
 		}
+		return
 	}
 	return
 }
