@@ -31,7 +31,7 @@ func (sc *slaveConn) CurrentDumpBinlogAsPB(dealFunc func(*pbmysql.Event), reload
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var eventCh <-chan vtmysql.BinlogEvent
-	_, eventCh, err = sc.conn.StartBinlogDumpFromCurrent(ctx)
+	sc.pos, eventCh, err = sc.conn.StartBinlogDumpFromCurrent(ctx)
 	if err != nil {
 		glog.Fatalf("StartBinlogDumpFromBinlogBeforeTimestamp %v", err)
 	}
