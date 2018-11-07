@@ -88,6 +88,7 @@ func (sc *slaveConn) dealProtoMsg(dealFunc func(*pbmysql.Event), reloadCh chan s
 					return
 				} else {
 					for _, v := range msg.Events {
+						glog.Infof("Get a binlog event %v-%v-%v, type %v\n", v.Schema, v.Table, v.Id, v.Et)
 						dealFunc(v)
 					}
 					sc.savePosition(msg.NextPos)
