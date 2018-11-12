@@ -83,12 +83,13 @@ func (sc *slaveConn) dealProtoMsg(dealFunc func(*pbmysql.Event), reloadCh chan s
 					}
 					glog.Errorf("parse event error : %v", msg.ErrInfo)
 				} else if len(msg.ReloadDDL) != 0 {
+					sc.savePosition(msg.NextPos)
 					glog.Warningf("Find a DDL %v, going to reload", msg.ReloadDDL)
 					reloadCh <- struct{}{}
 					return
 				} else {
 					for _, v := range msg.Events {
-						glog.Infof("Get a binlog event %v-%v-%v, type %v\n", v.Schema, v.Table, v.Id, v.Et)
+						glog.V(1).Infof("Get a binlog event %v-%v-%v, type %v\n", v.Schema, v.Table, v.Id, v.Et)
 						dealFunc(v)
 					}
 					sc.savePosition(msg.NextPos)

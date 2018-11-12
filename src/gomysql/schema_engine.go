@@ -13,6 +13,17 @@ type schemaEngine struct {
 	pools  *connpool.Pool
 }
 
+func (se *schemaEngine) QueryToStruct(query string, maxrows int, wantfields bool) (*sqltypes.Result, error) {
+	ctx := tabletenv.LocalContext()
+	conn, err := se.pools.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Recycle()
+
+	return conn.Exec(ctx, query, maxrows, wantfields)
+}
+
 func (se *schemaEngine) Close() {
 	se.engine.Close()
 }

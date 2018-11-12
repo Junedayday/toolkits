@@ -51,6 +51,7 @@ import:
 - package: vitess.io/vitess
   repo: git@github.com:Junedayday/vitess
   vcs: git
+  version: 595e51e21e6a4438c10a933df4790b1773ce1b3f
   subpackages:
   - go/mysql
   - go/sqltypes

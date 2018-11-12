@@ -1,8 +1,8 @@
-hash: e40299dbe2861ccd5e02a402949b24828145c4fed2989981c2890038d2ffd6d8
-updated: 2018-11-06T15:46:11.901597422+08:00
+hash: 216d0374cce55552e1933403ee1a52034f7d842deed0a324d73639e68048c69d
+updated: 2018-11-09T15:09:03.727239705+08:00
 imports:
 - name: cloud.google.com/go
-  version: c15541d6cecc1153b5cd2dbbb10371a796efe74c
+  version: cc28e317d9ccd190960a456486e63767532be6ba
   repo: git@github.com:GoogleCloudPlatform/google-cloud-go
   vcs: git
 - name: github.com/beorn7/perks
@@ -16,7 +16,7 @@ imports:
 - name: github.com/golang/glog
   version: 23def4e6c14b4da8ac2ed8007337bc5eb5007998
 - name: github.com/golang/protobuf
-  version: 75dceb112b174be156fa9952e66d3e99945572b4
+  version: 951a149f90371fb8858c6c979d03bb2583611052
   subpackages:
   - jsonpb
   - proto
@@ -59,7 +59,7 @@ imports:
   subpackages:
   - patricia
 - name: golang.org/x/crypto
-  version: 4d3f4d9ffa16a13f451c3b2999e9c49e9750bf06
+  version: e4dc69e5b2fd71dcaf8bd5d054eb936deb78d1fa
   repo: git@github.com:golang/crypto
   vcs: git
   subpackages:
@@ -71,7 +71,7 @@ imports:
   - poly1305
   - ssh
 - name: golang.org/x/net
-  version: 10aee181995363b41f712a55844a0dd52ea04646
+  version: 03003ca0c849e57b6ea29a4bab8d3cb6e4d568fe
   repo: git@github.com:golang/net
   vcs: git
   subpackages:
@@ -82,8 +82,12 @@ imports:
   - idna
   - internal/timeseries
   - trace
+- name: golang.org/x/oauth2
+  version: f42d05182288abf10faef86d16c0d07b8d40ea2d
+  repo: git@github.com:golang/oauth2
+  vcs: git
 - name: golang.org/x/sys
-  version: 7155702f2d47d94b134229da97195d0130cab001
+  version: 66b7b1311ac80bbafcd2daeef9a5e6e2cd1e2399
   repo: git@github.com:golang/sys
   vcs: git
   subpackages:
@@ -104,7 +108,7 @@ imports:
   - unicode/bidi
   - unicode/norm
 - name: golang.org/x/time
-  version: fbb02b2291d28baffd63558aa44b4b56f178d650
+  version: 85acf8d2951cb2a3bde7632f9ff273ef0379bcbd
   repo: git@github.com:golang/time
   vcs: git
   subpackages:
@@ -116,13 +120,13 @@ imports:
   subpackages:
   - cloudsql
 - name: google.golang.org/genproto
-  version: c830210a61dfaa790e1920f8d0470fc27bc2efbe
+  version: 5fc9ac5403620be16bcdb0c8e7644b1178472c3b
   repo: git@github.com:google/go-genproto
   vcs: git
   subpackages:
   - googleapis/rpc/status
 - name: google.golang.org/grpc
-  version: d27440de3ff4bcac15a44957845d2b7c1042ad35
+  version: 12ed5d0f69e19d7db71d6152b7163adca2604bd8
   repo: git@github.com:grpc/grpc-go
   vcs: git
   subpackages:

@@ -56,7 +56,7 @@ func (p *producer) produceEvent() (err error) {
 				err = fmt.Errorf(errProduceMessage, ev.TopicPartition.Error)
 				return
 			}
-			glog.Infof("Delivered message to topic %s [%d] at offset %v\n",
+			glog.V(1).Infof("Delivered message to topic %s [%d] at offset %v\n",
 				*ev.TopicPartition.Topic, ev.TopicPartition.Partition, ev.TopicPartition.Offset)
 		default:
 			err = fmt.Errorf(errIgnoredEvent, e)

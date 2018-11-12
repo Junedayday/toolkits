@@ -2,6 +2,8 @@ package gomysql
 
 import (
 	"proto/mysql/pbmysql"
+
+	"vitess.io/vitess/go/sqltypes"
 )
 
 // ConnCfger implement for a msyql instance conn
@@ -26,5 +28,6 @@ type SlaveConner interface {
 
 // SchemaEnginer implement for connection to a schema in mysql
 type SchemaEnginer interface {
+	QueryToStruct(query string, maxrows int, wantfields bool) (*sqltypes.Result, error)
 	Close()
 }
