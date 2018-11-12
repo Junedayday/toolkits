@@ -61,3 +61,11 @@ import:
   - go/vt/vttablet/tabletserver/connpool
   - go/vt/vttablet/tabletserver/schema
   - go/vt/vttablet/tabletserver/tabletenv
+- package: pkg/gomysql
+  repo: git@github.com:Junedayday/gomysql
+  vcs: git
+  version: 38581ed29537db777af915bf4f93b2f248f360c0
+- package: pkg/gokafka
+  repo: git@github.com:Junedayday/gokafka
+  vcs: git
+  version: 1e63b67cf0466e931248aa2b7e0fc32d3b50d34a
