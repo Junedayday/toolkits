@@ -1,5 +1,6 @@
 pkg/
 .vscode/
 vendor/
-src/vendor/
-src/glide.lock
+vendor/
+glide.lock
+glide.lock

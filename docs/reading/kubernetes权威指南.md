@@ -54,3 +54,17 @@
   - `Succedded` Pod 内所有容器均成功执行退出，且不会再重启
   - `Failed` Pod 内所有容器均已退出，但至少有一个容器退出为失败状态
   - `Unknown` 由于某种原因无法获取该 Pod 的状态，可能由于网络通信不畅导致
+
+## Kubernetes 源码分析
+
+#### kube-apiserver
+
+#### kube-controller-manager
+
+#### kube-scheduler
+
+#### kubelet
+
+#### kube-proxy
+
+#### kubectl
