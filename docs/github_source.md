@@ -1,4 +1,7 @@
-# Download packages
+# Source from Github
+
+## Download packages
+
 mkdir -p $GOPATH/src/golang.org/x/tools
 
 cd $GOPATH/src/golang.org/x/tools
@@ -11,7 +14,8 @@ cd $GOPATH/src/golang.org/x/lint
 
 git clone https://github.com/golang/lint
 
-# Useful packages in golang 
+## Useful packages in golang
+
 - `golang.org/x/mobile` https://github.com/golang/mobile
 - `golang.org/x/crypto` https://github.com/golang/crypto
 - `golang.org/x/net` https://github.com/golang/net
