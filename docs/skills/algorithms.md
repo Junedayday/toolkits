@@ -1,16 +1,14 @@
 # Algorithms Learning Plan
 
-## [Algorithms Video From Geekbang](../log/video_algorithms.md)
+## [e-Book Algorithms](../log/algorithms.md)
 
 - Level: 1
-- Start From 2019/01/12
-- Finish at ...
+- Going on
 
-## [e-Book Algorithms](../log/book_algorithms.md)
+## [Algorithms Video From Geekbang](../log/algorithms.md)
 
 - Level: 1
-- Start From ...
-- Finish at ...
+- Going on
 
 - Book `Introduction to Algorithms`
 - Practice in Leetcode
