@@ -1,8 +1,8 @@
 # toolkits
 
-## Project Lay-out
+## My Challenges
 
-Please reference the following link [here](https://github.com/golang-standards/project-layout).
+Please reference the Doc [here](./docs/challenge/guide.md)
 
 ## Skills to Improve
 
@@ -13,6 +13,10 @@ Please reference the following link [here](https://github.com/golang-standards/p
 - [Software Design](./docs/skills/design.md)
 - [Programmer Skills](./docs/skills/skills.md)
 - [Open Source Projects](./docs/skills/projects.md)
+
+## Project Lay-out
+
+Please reference the following link [here](https://github.com/golang-standards/project-layout).
 
 ## Skills Level from Google
 
@@ -29,7 +33,8 @@ Please reference the following link [here](https://github.com/golang-standards/p
 3 - basic proficiency in a subject area without relying on help.
 (3 -在不依赖帮助的情况下，熟练掌握某一科目。)
 
-4 - you are comfortable with the subject area and all routine work on it: 
+4 - you are comfortable with the subject area and all routine work on it:
+de
 (4 -你对主题领域和所有日常工作都很熟悉:)
 For software areas - ability to develop medium programs using all basic language features w/o book, awareness of more esoteric features (with book).
 (对于软件领域来说，能够使用所有基本的语言来开发中等的程序，使用w/o book，了解更深奥的特性(带书)。)

@@ -14,3 +14,4 @@
 - alg4 中的 `StdRandom` 和 `StdStats` 两个源码好好阅读
 - 排序: `Selection` `Insertion` `Shell` `Merge`
 - 红黑树插入的基本操作是左旋、右旋、变色三种，删除算法待深入了解
+- 图的最短路径算法需要重点关注
