@@ -1,5 +1,3 @@
 # Ideology
 
-## [Learning Log](../log/ideology.md)
-
-- Statistics : in software design & problem thinking
+[工程师个人成长中的若干心理学问题](../reading/engineer_ideology.md)

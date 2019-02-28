@@ -1,21 +1,23 @@
 # Programming Language
 
-## [Python](../log/python.md)
+## Python
 
-- Level: 1
-- 1st Study: Finish basic Python grammar at 2019/01/14
+- 2019/01 通篇阅读了 Python 的语法，自己实现了几个小工具
 
-## [C](../log/c.md)
+## C
 
-- Level: 1
-- 1st Study: Finish basic C grammar at 2019/01/16
+### The C Programming Language
 
-## [Java](../log/java.md)
+- 2019/01 完成电子版的阅读，巩固了基本语法部分
 
-- Level: 1
-- 1st Study: Finish basic Java grammar at 2019/01/21
+## Java
 
-## [Javascript]
+### Java 核心技术卷一
+
+- 2019/01 完成电子版的阅读，对 Java 面向对象有了初步了解
+- 2019/02 完成纸质版的阅读，对泛型和并发未细读
+
+## Javascript
 
 - Level:1
 - Planning...

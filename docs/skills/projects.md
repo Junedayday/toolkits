@@ -1,6 +1,3 @@
-# Open Source Project Learning Plan
+# Open Source Project
 
-## [NSQ](../log/nsq.md)
-
-- Level 1
-- Planning
+## NSQ
