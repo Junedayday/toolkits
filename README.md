@@ -11,8 +11,9 @@ Please reference the Doc [here](./docs/challenge/guide.md)
 - [Operating System](./docs/skills/system.md)
 - [Network Management System](./docs/skills/network.md)
 - [Software Design](./docs/skills/design.md)
-- [Programmer Skills](./docs/skills/skills.md)
+- [Tool Skills](./docs/skills/tool.md)
 - [Open Source Projects](./docs/skills/projects.md)
+- [Ideology](./docs/skills/ideology.md)
 
 ## Project Lay-out
 

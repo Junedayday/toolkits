@@ -1,7 +1,13 @@
 # Algorithms Learning Log
 
+- [2019/01/31 Finish Reading Algorithms e-Book](#finish-reading-algorithms)
 - [2019/01/23 Start Reading Algorithms e-Book](#start-reading-algorithms)
 - [知识点](#key-points)
+
+## Finish Reading Algorithms
+
+对本书进行了简单的阅读，由于电子书阅读时前后文查阅并不方便，对部分细节没有融会贯通
+本次作为初步的接触，后续通过视频讲解，开始对算法细节的掌握
 
 ## Start Reading Algorithms
 
@@ -15,3 +21,4 @@
 - 排序: `Selection` `Insertion` `Shell` `Merge`
 - 红黑树插入的基本操作是左旋、右旋、变色三种，删除算法待深入了解
 - 图的最短路径算法需要重点关注
+- 子字符串的查找方法 KMP/Boyer-Moore/Rabin-Karp 有时间再细读
