@@ -1,4 +1,5 @@
 # iFinder
+
 command+option+space 新建finder
 
 Shift+Command-C 电脑
