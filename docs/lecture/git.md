@@ -90,6 +90,7 @@ Git is a free and open source distributed version control system designed to han
   - git cherry pick `hashcode`
   > 没错，操作就是这么简单，问题是 branch 之间可能存在差异，可能需要人工改动
 - 有个频繁改动的文件，但对于我来说没什么用，每次提交时总要自己去忽略它，很麻烦
+  
   - git 项目的根目录上，新建一个 `.gitignore` 文件，可指定提交时忽略
 
 ## Git on web page
@@ -119,4 +120,4 @@ Git is a free and open source distributed version control system designed to han
 - 减少对多库的维护
 - 与第三方工具集成(文档,Task,Bug,CI,CD...)
 ...
-总而言之，为了提升开发效率，让开发人员有更多的自由时间。
+总而言之，为了提升开发效率，让开发人员有更多的自由时间。x
